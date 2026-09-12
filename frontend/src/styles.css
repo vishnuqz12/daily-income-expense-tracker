@@ -1,0 +1,123 @@
+:root{font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#172033;background:#f4f7fb;font-synthesis:none}*{box-sizing:border-box}body{margin:0;min-width:320px}button,input,select{font:inherit}button{cursor:pointer}.app{width:min(1180px,calc(100% - 32px));margin:0 auto;padding:34px 0 60px}.topbar{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;margin-bottom:24px}.eyebrow{margin:0 0 6px;font-size:12px;font-weight:800;letter-spacing:1.5px;color:#64748b}h1{margin:0 0 7px;font-size:clamp(30px,5vw,44px);letter-spacing:-1.5px}h2,p{margin-top:0}.subtitle{margin:0;color:#64748b}.net-savings{min-width:220px;padding:17px 20px;background:#172b67;color:white;border-radius:16px;box-shadow:0 8px 30px rgba(30,45,70,.12)}.net-savings span,.net-savings small{display:block}.net-savings span{font-size:11px;font-weight:800;letter-spacing:1px;opacity:.75}.net-savings strong{display:block;margin:6px 0;font-size:25px}.net-savings small{font-size:11px;opacity:.7}.panel{background:white;border:1px solid #e5eaf1;border-radius:18px;padding:22px;box-shadow:0 8px 30px rgba(30,45,70,.05)}.section-title,.panel-heading{display:flex;align-items:center;justify-content:space-between;gap:16px}.section-title{margin-bottom:17px}.section-title h2,.panel-heading h2{margin:0 0 4px;font-size:20px}.section-title p,.panel-heading p{margin:0;color:#7b8798;font-size:13px}.secondary-button{border:1px solid #cfd7e5;background:white;color:#3157c8;padding:10px 14px;border-radius:10px;font-weight:800}.bank-form{display:flex;gap:8px;margin:0 0 14px}.bank-form input{margin:0;flex:1}.small{width:auto;margin:0!important}.bank-tabs{display:flex;gap:8px;overflow-x:auto;padding-bottom:2px}.bank-tab{border:1px solid #dce2eb;background:#f8fafc;color:#59677d;padding:11px 18px;border-radius:11px;white-space:nowrap;font-weight:800}.bank-tab.active{background:#3157c8;color:white;border-color:#3157c8}.account-header{display:flex;align-items:center;justify-content:space-between;margin:22px 3px 12px}.account-header h2{margin:0 0 2px}.account-header p{margin:0;color:#7b8798;font-size:12px}.danger-link{border:0;background:transparent;color:#b42318;font-size:12px;font-weight:700}.summary-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:18px}.summary-card{padding:20px;background:white;border:1px solid #e5eaf1;border-radius:16px;box-shadow:0 8px 30px rgba(30,45,70,.04)}.summary-card span{display:block;margin-bottom:10px;color:#667085;font-size:13px;font-weight:700}.summary-card strong{font-size:25px}.income-card strong,.transaction-amount.income,.month-savings{color:#087443}.expense-card strong,.transaction-amount.expense,.month-expense{color:#c43131}.balance-card strong{color:#3157c8}.monthly-panel{margin-bottom:18px}.month-picker{display:flex;align-items:center;gap:8px;color:#667085;font-size:12px;font-weight:700}.month-picker input{width:auto;margin:0;padding:9px}.month-list{display:flex;flex-direction:column}.month-row{display:grid;grid-template-columns:1fr auto auto;gap:20px;align-items:center;text-align:left;width:100%;padding:13px 14px;border:0;border-top:1px solid #edf0f4;background:white;color:#344054}.month-row:hover,.month-row.selected{background:#f7f9ff}.month-row.selected{box-shadow:inset 3px 0 #3157c8}.month-expense,.month-savings,.month-loss{font-size:13px;font-weight:800;white-space:nowrap}.month-loss{color:#b42318}.show-more{margin-top:12px;border:0;background:transparent;color:#3157c8;font-weight:800}.content-grid{display:grid;grid-template-columns:390px 1fr;gap:18px;align-items:start}.type-switch{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:5px;margin:18px 0;background:#f1f4f8;border-radius:12px}.type-switch button{border:0;padding:10px;border-radius:9px;background:transparent;color:#667085;font-weight:800}.type-switch button.active.expense{background:white;color:#c43131;box-shadow:0 2px 8px rgba(0,0,0,.08)}.type-switch button.active.income{background:white;color:#087443;box-shadow:0 2px 8px rgba(0,0,0,.08)}form label{display:block;margin-bottom:14px;color:#344054;font-size:13px;font-weight:700}input,select{width:100%;margin-top:7px;padding:12px 13px;border:1px solid #d9e0e9;border-radius:10px;outline:none;background:white;color:#172033}input:focus,select:focus{border-color:#6d87df;box-shadow:0 0 0 3px rgba(72,99,196,.1)}.amount-input{display:flex;align-items:center;margin-top:7px;border:1px solid #d9e0e9;border-radius:10px;overflow:hidden}.amount-input:focus-within{border-color:#6d87df;box-shadow:0 0 0 3px rgba(72,99,196,.1)}.amount-input span{padding-left:13px;color:#667085;font-weight:700}.amount-input input{margin:0;border:0;box-shadow:none!important}.primary-button{width:100%;margin-top:5px;border:0;border-radius:10px;padding:13px;background:#3157c8;color:white;font-weight:800}.primary-button.expense{background:#c43131}.primary-button.income{background:#087443}.transactions-heading{margin-bottom:12px}.filter{width:auto;min-width:100px;margin:0;padding:9px 11px}.transaction-list{display:flex;flex-direction:column}.transaction{display:grid;grid-template-columns:42px 1fr auto 28px;gap:12px;align-items:center;padding:14px 0;border-top:1px solid #edf0f4}.transaction-icon{width:40px;height:40px;display:grid;place-items:center;border-radius:12px;font-size:20px;font-weight:800}.transaction-icon.income{background:#e8f7ef;color:#087443}.transaction-icon.expense{background:#fff0f0;color:#c43131}.transaction-info{min-width:0}.transaction-info strong{display:block;margin-bottom:4px;font-size:14px}.transaction-info span{display:block;color:#7b8798;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.transaction-amount{font-weight:800;white-space:nowrap}.delete-button{width:28px;height:28px;border:0;border-radius:7px;background:transparent;color:#98a2b3;font-size:21px}.delete-button:hover{background:#f2f4f7;color:#c43131}.empty{min-height:250px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:#7b8798;text-align:center}.empty.compact{min-height:90px}.empty strong{color:#344054}.empty-icon{display:grid;place-items:center;width:52px;height:52px;margin-bottom:8px;border-radius:50%;background:#eef2ff;color:#3157c8;font-size:23px;font-weight:800}.error{margin-bottom:14px;padding:12px 14px;border-radius:10px;background:#fff0f0;color:#b42318;border:1px solid #ffd0d0}@media(max-width:850px){.topbar{flex-direction:column}.net-savings{width:100%}.summary-grid,.content-grid{grid-template-columns:1fr}.month-row{grid-template-columns:1fr auto}.month-savings{grid-column:2}.bank-form{flex-direction:column}}@media(max-width:520px){.app{width:calc(100% - 20px);padding-top:20px}.panel{padding:17px}.section-title{align-items:flex-start;flex-direction:column}.month-picker{width:100%;justify-content:space-between}.month-picker input{width:50%}.transaction{grid-template-columns:38px 1fr auto}.transaction-icon{width:38px;height:38px}.delete-button{grid-column:3;grid-row:1}.transaction-amount{grid-column:2;grid-row:2;justify-self:start;font-size:13px}.month-row{grid-template-columns:1fr}.month-savings{grid-column:1}.month-expense{justify-self:start}}
+
+
+html {
+  background: #f4f7fb;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  min-height: 100vh;
+  min-height: 100dvh;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: none;
+}
+
+button, input, select {
+  -webkit-appearance: none;
+}
+
+button {
+  touch-action: manipulation;
+}
+
+.install-tip {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-bottom: 18px;
+  padding: 11px 14px;
+  border: 1px solid #dce4fb;
+  border-radius: 13px;
+  background: #eef3ff;
+  color: #34477a;
+}
+
+.install-tip-icon {
+  width: 31px;
+  height: 31px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background: #3157c8;
+  color: white;
+  font-weight: 900;
+}
+
+.install-tip strong,
+.install-tip span {
+  display: block;
+}
+
+.install-tip strong {
+  margin-bottom: 2px;
+  font-size: 12px;
+}
+
+.install-tip div span {
+  color: #667085;
+  font-size: 11px;
+}
+
+@media (max-width: 520px) {
+  .app {
+    width: calc(100% - 16px);
+    padding-top: max(12px, env(safe-area-inset-top));
+    padding-bottom: max(28px, env(safe-area-inset-bottom));
+  }
+
+  h1 {
+    font-size: 34px;
+    line-height: 1.06;
+  }
+
+  .subtitle {
+    font-size: 13px;
+    line-height: 1.45;
+  }
+
+  .panel,
+  .summary-card {
+    border-radius: 15px;
+  }
+
+  .secondary-button,
+  .bank-tab,
+  .type-switch button,
+  .primary-button,
+  .filter,
+  .delete-button,
+  input,
+  select {
+    min-height: 44px;
+  }
+
+  .bank-tabs {
+    margin-right: -4px;
+    padding-right: 4px;
+    padding-bottom: 7px;
+    scrollbar-width: none;
+  }
+
+  .bank-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .bank-tab {
+    padding: 10px 16px;
+  }
+
+  .month-row {
+    min-height: 64px;
+    gap: 6px;
+    padding: 12px;
+  }
+
+  .transaction {
+    min-height: 68px;
+  }
+
+  .install-tip {
+    margin-bottom: 12px;
+  }
+}
