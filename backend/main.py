@@ -10,7 +10,7 @@ import json
 import uuid
 
 app = FastAPI(title='Daily Income & Expense Tracker API')
-app.add_middleware(CORSMiddleware, allow_origins=['http://localhost:5173','http://127.0.0.1:5173'], allow_credentials=True, allow_methods=['*'], allow_headers=['*'])
+app.add_middleware(CORSMiddleware, allow_origins=['http://localhost:5173','http://127.0.0.1:5173','https://daily-income-expense-tracker-pwa.onrender.com/'], allow_credentials=True, allow_methods=['*'], allow_headers=['*'])
 
 DATA_DIR = Path(__file__).parent / 'data'
 DATA_DIR.mkdir(exist_ok=True)
