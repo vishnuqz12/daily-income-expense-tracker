@@ -1,4 +1,4 @@
-const CACHE_NAME = 'daily-money-tracker-v1';
+const CACHE_NAME = 'daily-money-tracker-v2';
 const APP_SHELL = [
   '/',
   '/manifest.webmanifest',

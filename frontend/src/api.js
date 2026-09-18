@@ -42,5 +42,17 @@ export const api = {
   getMonthlySummary: (bankId) => request(`/monthly-summary?bank_id=${encodeURIComponent(bankId)}`),
   addTransaction: (data) => request('/transactions', { method: 'POST', body: JSON.stringify(data) }),
   deleteTransaction: (id) => request(`/transactions/${id}`, { method: 'DELETE' }),
+  getTransfers: ({ bankId = '', periodId = '' } = {}) => request(`/transfers${bankId || periodId ? `?${bankId ? `bank_id=${encodeURIComponent(bankId)}` : ''}${bankId && periodId ? '&' : ''}${periodId ? `period_id=${encodeURIComponent(periodId)}` : ''}` : ''}`),
+  addTransfer: (data) => request('/transfers', { method: 'POST', body: JSON.stringify(data) }),
+  deleteTransfer: (id) => request(`/transfers/${id}`, { method: 'DELETE' }),
   getDashboard: () => request('/dashboard'),
+  downloadBackup: async () => {
+    const token = getToken();
+    const response = await fetch(`${API_URL}/backup/export`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || 'Could not create backup');
+    }
+    return response.blob();
+  },
 };

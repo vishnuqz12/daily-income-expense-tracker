@@ -41,7 +41,7 @@ function AuthScreen({ onSuccess }) {
         {mode==='register' && <label>Confirm password<input type="password" value={confirm} onChange={e=>setConfirm(e.target.value)} placeholder="Repeat your password" autoComplete="new-password" required/></label>}
         <button className="primary-button" disabled={busy}>{busy ? 'Please wait…' : mode==='login' ? 'Login' : 'Create account'}</button>
       </form>
-      <p className="auth-note">Each account gets its own banks, financial months, income, expenses and savings.</p>
+      <p className="auth-note">Each account gets its own banks, financial months, income, expenses, transfers and savings.</p>
     </div>
   </div>
 }
@@ -82,13 +82,14 @@ function Dashboard({ dashboard, loading }) {
   </div>
 }
 
-function Accounts({ user, dashboard, refreshDashboard }) {
+function Accounts({ refreshDashboard }) {
   const [banks,setBanks] = useState([]);
   const [bankId,setBankId] = useState('');
   const [periods,setPeriods] = useState([]);
   const [periodId,setPeriodId] = useState('');
   const [transactions,setTransactions] = useState([]);
-  const [summary,setSummary] = useState({income:0,expense:0,savings:0,transaction_count:0});
+  const [transfers,setTransfers] = useState([]);
+  const [summary,setSummary] = useState({income:0,expense:0,savings:0,transaction_count:0,bank_balance:0});
   const [monthly,setMonthly] = useState([]);
   const [showAllMonths,setShowAllMonths] = useState(false);
   const [showBankForm,setShowBankForm] = useState(false);
@@ -100,57 +101,85 @@ function Accounts({ user, dashboard, refreshDashboard }) {
   const [loading,setLoading] = useState(true);
   const [error,setError] = useState('');
   const [form,setForm] = useState({amount:'',category:'Food',date:today(),note:''});
+  const [transferForm,setTransferForm] = useState({fromBankId:'',toBankId:'',amount:'',date:today(),note:''});
+  const [showTransferForm,setShowTransferForm] = useState(false);
   const categories = useMemo(() => type === 'income' ? incomeCategories : expenseCategories,[type]);
 
   async function loadBase() {
     try {
       const [bankItems, periodItems] = await Promise.all([api.getBanks(), api.getPeriods()]);
       setBanks(bankItems); setPeriods(periodItems);
-      setBankId(prev => prev && bankItems.some(b=>b.id===prev) ? prev : bankItems[0]?.id || '');
-      setPeriodId(prev => prev && periodItems.some(p=>p.id===prev) ? prev : periodItems[0]?.id || '');
+      const nextBankId = bankId && bankItems.some(b=>b.id===bankId) ? bankId : bankItems[0]?.id || '';
+      const nextPeriodId = periodId && periodItems.some(p=>p.id===periodId) ? periodId : periodItems[0]?.id || '';
+      setBankId(nextBankId); setPeriodId(nextPeriodId);
+      setTransferForm(prev => ({...prev, fromBankId: nextBankId, toBankId: prev.toBankId && bankItems.some(b=>b.id===prev.toBankId) && prev.toBankId !== nextBankId ? prev.toBankId : (bankItems.find(b=>b.id!==nextBankId)?.id || '')}));
+      resetTransactionDate(nextPeriodId, periodItems, true);
     } catch(e) { setError(e.message); }
   }
 
   async function loadData() {
-    if (!bankId || !periodId) { setTransactions([]); setSummary({income:0,expense:0,savings:0,transaction_count:0}); setMonthly([]); setLoading(false); return; }
+    if (!bankId || !periodId) { setTransactions([]); setTransfers([]); setSummary({income:0,expense:0,savings:0,transaction_count:0,bank_balance:0}); setMonthly([]); setLoading(false); return; }
     try {
       setLoading(true); setError('');
-      const [items,total,months] = await Promise.all([
-        api.getTransactions({bankId,type:filter,periodId}), api.getSummary({bankId,periodId}), api.getMonthlySummary(bankId)
+      const [items,total,months,bankTransfers] = await Promise.all([
+        api.getTransactions({bankId,type:filter,periodId}), api.getSummary({bankId,periodId}), api.getMonthlySummary(bankId), api.getTransfers({bankId,periodId})
       ]);
-      setTransactions(items); setSummary(total); setMonthly(months);
+      setTransactions(items); setSummary(total); setMonthly(months); setTransfers(bankTransfers);
     } catch(e){ setError(e.message); } finally { setLoading(false); }
   }
 
   useEffect(()=>{loadBase()},[]);
   useEffect(()=>{loadData()},[bankId,periodId,filter]);
 
-  function resetTransactionDate(nextPeriodId = periodId) {
-    const active = periods.find(p=>p.id===nextPeriodId);
-    const current = today();
-    const fallback = active && current < active.start_date ? active.start_date : current;
-    setForm({amount:'',category:type==='income'?'Salary':'Food',date:fallback,note:''});
+  function defaultDateForPeriod(nextPeriodId, list = periods) {
+    const active = list.find(p=>p.id===nextPeriodId);
+    if (!active) return today();
+    const latest = list[0];
+    return latest?.id === active.id && today() >= active.start_date ? today() : active.start_date;
+  }
+
+  function resetTransactionDate(nextPeriodId = periodId, list = periods, skipStateGuard = false) {
+    const fallback = defaultDateForPeriod(nextPeriodId, list);
+    setForm(prev => ({...prev, amount:'',category:type==='income'?'Salary':'Food',date:fallback,note:''}));
+    if (skipStateGuard) setTransferForm(prev => ({...prev, date:fallback}));
+  }
+
+  function setSelectedPeriod(nextId) {
+    setPeriodId(nextId);
+    const nextDate = defaultDateForPeriod(nextId);
+    setForm(prev => ({...prev, amount:'',category:type==='income'?'Salary':'Food',date:nextDate,note:''}));
+    setTransferForm(prev => ({...prev, amount:'',date:nextDate,note:''}));
   }
 
   async function addBank(e) {
     e.preventDefault(); if(!bankName.trim()) return;
-    try { const bank=await api.addBank(bankName.trim()); setBankName(''); setShowBankForm(false); setBanks([...banks,bank]); setBankId(bank.id); }
-    catch(e){setError(e.message)}
+    try {
+      const bank=await api.addBank(bankName.trim());
+      const nextBanks=[...banks,bank];
+      setBankName(''); setShowBankForm(false); setBanks(nextBanks); setBankId(bank.id);
+      const other = nextBanks.find(b=>b.id!==bank.id);
+      setTransferForm(prev=>({...prev,fromBankId:bank.id,toBankId:other?.id||'',date:defaultDateForPeriod(periodId)}));
+    } catch(e){setError(e.message)}
   }
+
   async function removeBank() {
-    if(!bankId || !window.confirm('Delete this bank and all transactions recorded under it?')) return;
-    try { await api.deleteBank(bankId); const remaining=banks.filter(b=>b.id!==bankId); setBanks(remaining); setBankId(remaining[0]?.id || ''); }
+    if(!bankId || !window.confirm('Delete this bank and all transactions and transfers recorded under it?')) return;
+    try { const deleted=bankId; await api.deleteBank(bankId); const remaining=banks.filter(b=>b.id!==deleted); setBanks(remaining); const next=remaining[0]?.id||''; setBankId(next); setTransferForm(prev=>({...prev,fromBankId:next,toBankId:remaining.find(b=>b.id!==next)?.id||''})); await loadData(); await refreshDashboard(); }
     catch(e){setError(e.message)}
   }
+
   async function addPeriod(e) {
     e.preventDefault(); if(!newStartDate) return;
     try {
       const created = await api.addPeriod(newStartDate);
       const next = [created, ...periods];
-      setPeriods(next); setPeriodId(created.id); setShowPeriodForm(false); resetTransactionDate(created.id); await refreshDashboard();
+      setPeriods(next); setPeriodId(created.id); setShowPeriodForm(false); resetTransactionDate(created.id,next,true); await refreshDashboard();
     } catch(e){setError(e.message)}
   }
+
   function update(e){setForm({...form,[e.target.name]:e.target.value})}
+  function updateTransfer(e){setTransferForm({...transferForm,[e.target.name]:e.target.value})}
+
   async function submit(e){
     e.preventDefault(); if(!bankId) return setError('Add a bank account first.');
     if(!periodId) return setError('Start a financial month before adding transactions.');
@@ -158,28 +187,45 @@ function Accounts({ user, dashboard, refreshDashboard }) {
     try { await api.addTransaction({bank_id:bankId,type,amount:Number(form.amount),category:form.category,date:form.date,note:form.note}); resetTransactionDate(); await loadData(); await refreshDashboard(); }
     catch(e){setError(e.message)}
   }
+
+  async function addTransfer(e){
+    e.preventDefault();
+    if(!periodId) return setError('Start a financial month before transferring money.');
+    if(!transferForm.fromBankId || !transferForm.toBankId) return setError('Add at least two bank accounts to transfer money between them.');
+    if(transferForm.fromBankId === transferForm.toBankId) return setError('Choose two different bank accounts.');
+    if(!transferForm.amount || Number(transferForm.amount)<=0) return setError('Enter a transfer amount greater than 0.');
+    try {
+      await api.addTransfer({from_bank_id:transferForm.fromBankId,to_bank_id:transferForm.toBankId,amount:Number(transferForm.amount),date:transferForm.date,note:transferForm.note});
+      const from = transferForm.fromBankId;
+      setTransferForm({fromBankId:from,toBankId:banks.find(b=>b.id!==from)?.id||'',amount:'',date:defaultDateForPeriod(periodId),note:''});
+      setShowTransferForm(false); await loadData(); await refreshDashboard();
+    } catch(e){setError(e.message)}
+  }
+
   async function remove(id){if(!window.confirm('Delete this transaction?')) return; try{await api.deleteTransaction(id);await loadData();await refreshDashboard()}catch(e){setError(e.message)}}
+  async function removeTransfer(id){if(!window.confirm('Delete this bank transfer?')) return; try{await api.deleteTransfer(id);await loadData();await refreshDashboard()}catch(e){setError(e.message)}}
 
   const visibleMonths = showAllMonths ? monthly : monthly.slice(0,6);
   const selectedBank = banks.find(b=>b.id===bankId);
   const selectedPeriod = periods.find(p=>p.id===periodId);
   const selectedBankNet = monthly.reduce((sum,m)=>sum+m.savings,0);
+  const transferOptions = banks.filter(b=>b.id!==transferForm.fromBankId);
 
   return <>
     <section className="panel bank-section">
       <div className="section-title"><div><h2>Bank Accounts</h2><p>Each bank has its own income, expenses and savings.</p></div><button className="secondary-button" onClick={()=>setShowBankForm(!showBankForm)}>+ Add Bank</button></div>
       {showBankForm && <form className="bank-form" onSubmit={addBank}><input value={bankName} onChange={e=>setBankName(e.target.value)} placeholder="Bank name e.g. ICICI Bank" autoFocus/><button className="primary-button small" type="submit">Add Bank</button></form>}
-      {banks.length ? <div className="bank-tabs">{banks.map(bank=><button key={bank.id} className={bank.id===bankId?'bank-tab active':'bank-tab'} onClick={()=>{setBankId(bank.id);setFilter('')}}>{bank.name}</button>)}</div> : <div className="empty compact"><strong>Add your first bank account</strong><span>For example: ICICI Bank, HDFC Bank, SBI</span></div>}
+      {banks.length ? <div className="bank-tabs">{banks.map(bank=><button key={bank.id} className={bank.id===bankId?'bank-tab active':'bank-tab'} onClick={()=>{setBankId(bank.id);setFilter('');setTransferForm(prev=>({...prev,fromBankId:bank.id,toBankId:banks.find(b=>b.id!==bank.id)?.id||'',date:defaultDateForPeriod(periodId)}))}}>{bank.name}</button>)}</div> : <div className="empty compact"><strong>Add your first bank account</strong><span>For example: ICICI Bank, HDFC Bank, SBI</span></div>}
     </section>
 
     <section className="panel month-control-panel">
       <div className="section-title"><div><h2>Financial Month</h2><p>Start a new month only when you choose the start date. Your month does not reset automatically.</p></div><button className="secondary-button" onClick={()=>setShowPeriodForm(!showPeriodForm)}>+ Start New Month</button></div>
       {showPeriodForm && <form className="start-month-form" onSubmit={addPeriod}><label>New month start date<input type="date" value={newStartDate} onChange={e=>setNewStartDate(e.target.value)} required/></label><div className="month-form-help">Example: choose the 25th when your salary arrives on the 25th.</div><button className="primary-button small" type="submit">Start Month</button></form>}
-      {periods.length ? <div className="period-tabs">{periods.map(p=><button key={p.id} className={p.id===periodId?'period-tab active':'period-tab'} onClick={()=>{setPeriodId(p.id);resetTransactionDate(p.id)}}>{periodLabel(p)}</button>)}</div> : <div className="empty compact"><strong>No financial month started</strong><span>Choose the date your current month begins before adding transactions.</span></div>}
+      {periods.length ? <div className="period-tabs">{periods.map(p=><button key={p.id} className={p.id===periodId?'period-tab active':'period-tab'} onClick={()=>setSelectedPeriod(p.id)}>{periodLabel(p)}</button>)}</div> : <div className="empty compact"><strong>No financial month started</strong><span>Choose the date your current month begins before adding transactions.</span></div>}
     </section>
 
     {selectedBank && selectedPeriod && <>
-      <div className="account-header"><div><h2>{selectedBank.name}</h2><p>{periodLabel(selectedPeriod)}</p></div><div className="account-actions"><div className="mini-net">Selected bank net: <strong>{money(selectedBankNet)}</strong></div><button className="danger-link" onClick={removeBank}>Delete account</button></div></div>
+      <div className="account-header"><div><h2>{selectedBank.name}</h2><p>{periodLabel(selectedPeriod)}</p></div><div className="account-actions"><div className="mini-net">Selected bank net: <strong>{money(selectedBankNet)}</strong></div><div className="mini-net">Bank balance incl. transfers: <strong>{money(summary.bank_balance)}</strong></div><button className="danger-link" onClick={removeBank}>Delete account</button></div></div>
 
       <section className="summary-grid">
         <div className="summary-card income-card"><span>{periodLabel(selectedPeriod)} Income</span><strong>{money(summary.income)}</strong></div>
@@ -187,9 +233,24 @@ function Accounts({ user, dashboard, refreshDashboard }) {
         <div className="summary-card balance-card"><span>Monthly Savings</span><strong>{money(summary.savings)}</strong></div>
       </section>
 
+      <section className="panel transfer-panel">
+        <div className="section-title"><div><h2>Self Transfer</h2><p>Move your own money from one bank account to another. Transfers do not count as income or expense.</p></div>{banks.length >= 2 && <button className="secondary-button" onClick={()=>setShowTransferForm(!showTransferForm)}>{showTransferForm ? 'Close Transfer' : '+ Transfer Money'}</button>}</div>
+        {banks.length < 2 ? <div className="empty compact"><strong>Add another bank to transfer money</strong><span>Once you add a second bank, it will automatically appear here.</span></div> : <>
+          {showTransferForm && <form className="transfer-form" onSubmit={addTransfer}>
+            <label>From bank<select name="fromBankId" value={transferForm.fromBankId} onChange={e=>setTransferForm(f=>({...f,fromBankId:e.target.value,toBankId:f.toBankId===e.target.value?(banks.find(b=>b.id!==e.target.value)?.id||''):f.toBankId}))}>{banks.map(b=><option key={b.id} value={b.id}>{b.name}</option>)}</select></label>
+            <label>To bank<select name="toBankId" value={transferForm.toBankId} onChange={updateTransfer}>{transferOptions.map(b=><option key={b.id} value={b.id}>{b.name}</option>)}</select></label>
+            <label>Amount<div className="amount-input"><span>₹</span><input name="amount" type="number" inputMode="decimal" min="0" step="0.01" value={transferForm.amount} onChange={updateTransfer} placeholder="0.00" required/></div></label>
+            <label>Date<input name="date" type="date" value={transferForm.date} onChange={updateTransfer} required/></label>
+            <label className="wide-field">Note<input name="note" value={transferForm.note} onChange={updateTransfer} placeholder="e.g. Move money to savings account" maxLength={200}/></label>
+            <button className="primary-button transfer-button" type="submit">Transfer Money</button>
+          </form>}
+          {transfers.length ? <div className="transfer-list">{transfers.map(item=><article className="transfer-row" key={item.id}><div className="transfer-icon">⇄</div><div className="transaction-info"><strong>{item.from_bank_name} → {item.to_bank_name}</strong><span>{dateLabel(item.date)}{item.note?` • ${item.note}`:''}</span></div><div className="transaction-amount">{money(item.amount)}</div><button className="delete-button" title="Delete transfer" onClick={()=>removeTransfer(item.id)}>×</button></article>)}</div> : !showTransferForm && <div className="empty compact"><strong>No transfers in this financial month</strong><span>Your bank-to-bank transfers will appear here.</span></div>}
+        </>}
+      </section>
+
       <section className="monthly-panel panel">
-        <div className="section-title"><div><h2>Monthly Expense History</h2><p>Every month here uses the start date you gave the app.</p></div><label className="month-picker">View month<select value={periodId} onChange={e=>{setPeriodId(e.target.value);resetTransactionDate(e.target.value)}}>{periods.map(p=><option key={p.id} value={p.id}>{periodLabel(p)}</option>)}</select></label></div>
-        {monthly.length===0 ? <div className="empty compact"><strong>No monthly records yet</strong><span>Start a month and add income or expense transactions.</span></div> : <div className="month-list">{visibleMonths.map(m=><button key={m.period_id} className={`month-row ${m.period_id===periodId?'selected':''}`} onClick={()=>{setPeriodId(m.period_id);resetTransactionDate(m.period_id)}}><span>{periodLabel(m)}</span><span className="month-expense">Expense {money(m.expense)}</span><span className={m.savings>=0?'month-savings':'month-loss'}>Savings {money(m.savings)}</span></button>)}</div>}
+        <div className="section-title"><div><h2>Monthly Expense History</h2><p>Every month here uses the start date you gave the app.</p></div><label className="month-picker">View month<select value={periodId} onChange={e=>setSelectedPeriod(e.target.value)}>{periods.map(p=><option key={p.id} value={p.id}>{periodLabel(p)}</option>)}</select></label></div>
+        {monthly.length===0 ? <div className="empty compact"><strong>No monthly records yet</strong><span>Start a month and add income or expense transactions.</span></div> : <div className="month-list">{visibleMonths.map(m=><button key={m.period_id} className={`month-row ${m.period_id===periodId?'selected':''}`} onClick={()=>setSelectedPeriod(m.period_id)}><span>{periodLabel(m)}</span><span className="month-expense">Expense {money(m.expense)}</span><span className={m.savings>=0?'month-savings':'month-loss'}>Savings {money(m.savings)}</span></button>)}</div>}
         {monthly.length>6 && <button className="show-more" onClick={()=>setShowAllMonths(!showAllMonths)}>{showAllMonths?'Show recent months':'View all months'}</button>}
       </section>
 
@@ -239,12 +300,20 @@ function App() {
   useEffect(()=>{ if (token && user) loadDashboard(); },[token,user]);
 
   async function logout(){ await api.logout(); setToken(''); setLocalToken(''); setUser(null); }
+  async function backup(){
+    try{
+      const blob = await api.downloadBackup();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = `daily-money-tracker-backup-${new Date().toISOString().slice(0,10)}.zip`;
+      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    }catch(e){setGlobalError(e.message)}
+  }
   if (!token || !user) return <AuthScreen onSuccess={afterLogin}/>;
 
   return <div className="app">
     <header className="topbar">
       <div><p className="eyebrow">PERSONAL FINANCE</p><h1>Daily Money Tracker</h1><p className="subtitle">Track every bank account, every month, and your total savings.</p></div>
-      <div className="profile-chip"><div className="profile-avatar">{user.email.slice(0,1).toUpperCase()}</div><div><strong>{user.email}</strong><span>Your private profile</span></div><button onClick={logout}>Log out</button></div>
+      <div className="profile-chip"><div className="profile-avatar">{user.email.slice(0,1).toUpperCase()}</div><div><strong>{user.email}</strong><span>Your private profile</span></div><button onClick={backup}>Backup</button><button onClick={logout}>Log out</button></div>
     </header>
 
     {globalError && <div className="error">{globalError}</div>}
@@ -252,7 +321,7 @@ function App() {
 
     <nav className="main-tabs" aria-label="Main navigation"><button className={activeTab==='dashboard'?'active':''} onClick={()=>setActiveTab('dashboard')}>Dashboard</button><button className={activeTab==='accounts'?'active':''} onClick={()=>setActiveTab('accounts')}>Accounts & Transactions</button></nav>
 
-    {activeTab==='dashboard' ? <Dashboard dashboard={dashboard} loading={dashboardLoading}/> : <Accounts user={user} dashboard={dashboard} refreshDashboard={loadDashboard}/>} 
+    {activeTab==='dashboard' ? <Dashboard dashboard={dashboard} loading={dashboardLoading}/> : <Accounts refreshDashboard={loadDashboard}/>} 
   </div>;
 }
 
