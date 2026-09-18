@@ -1,23 +1,25 @@
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from typing import Literal, Optional
 from datetime import date, datetime, timedelta
 from pathlib import Path
+import csv
+import gzip
 import hashlib
 import hmac
+import io
 import json
 import secrets
+import threading
 import uuid
+import zipfile
 
 app = FastAPI(title='Daily Income & Expense Tracker API')
 
-# The frontend sends the bearer token in an Authorization header, so cookies are not required.
-# Allowing all origins keeps the Render frontend/backend split simple; the bearer token still
-# protects user data at the API level.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=['*'],
@@ -28,44 +30,109 @@ app.add_middleware(
 
 DATA_DIR = Path(__file__).parent / 'data'
 DATA_DIR.mkdir(exist_ok=True)
-DATA_FILE = DATA_DIR / 'finance.json'
+DATA_ARCHIVE = DATA_DIR / 'finance_data.zip'
+LEGACY_JSON = DATA_DIR / 'finance.json'
 FRONTEND_DIST = Path(__file__).parent.parent / 'frontend' / 'dist'
 TOKEN_DAYS = 30
 security = HTTPBearer(auto_error=False)
+DATA_LOCK = threading.Lock()
+
+TABLES = {
+    'users': ['id', 'email', 'password_salt', 'password_hash', 'created_at'],
+    'sessions': ['token', 'user_id', 'expires_at'],
+    'banks': ['id', 'user_id', 'name', 'created_at'],
+    'transactions': ['id', 'user_id', 'bank_id', 'type', 'amount', 'category', 'date', 'note', 'created_at'],
+    'periods': ['id', 'user_id', 'start_date', 'created_at'],
+    'transfers': ['id', 'user_id', 'from_bank_id', 'to_bank_id', 'amount', 'date', 'note', 'created_at'],
+}
 
 
 def empty_data():
-    return {'users': [], 'sessions': [], 'banks': [], 'transactions': [], 'periods': []}
+    return {name: [] for name in TABLES}
 
 
-def load_data():
-    if not DATA_FILE.exists():
-        return empty_data()
-    try:
-        raw = json.loads(DATA_FILE.read_text(encoding='utf-8'))
-    except (json.JSONDecodeError, FileNotFoundError):
-        return empty_data()
+def _clean_row(table, row):
+    row = {key: row.get(key, '') for key in TABLES[table]}
+    if table in {'transactions', 'transfers'} and row.get('amount') not in {'', None}:
+        try:
+            row['amount'] = float(row['amount'])
+        except (TypeError, ValueError):
+            row['amount'] = 0.0
+    return row
 
-    # Backward compatibility with the previous single-user format.
-    if isinstance(raw, list):
-        raw = {'banks': [], 'transactions': raw}
-    if not isinstance(raw, dict):
-        raw = empty_data()
 
+def _write_archive(data, destination):
+    tmp = destination.with_suffix('.tmp')
+    with zipfile.ZipFile(tmp, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        for table, columns in TABLES.items():
+            text_buffer = io.StringIO(newline='')
+            writer = csv.DictWriter(text_buffer, fieldnames=columns, extrasaction='ignore')
+            writer.writeheader()
+            for item in data.get(table, []):
+                writer.writerow({key: '' if item.get(key) is None else item.get(key, '') for key in columns})
+            archive.writestr(f'{table}.csv', text_buffer.getvalue().encode('utf-8'))
+    tmp.replace(destination)
+
+
+def _read_archive(path):
     data = empty_data()
-    for key in data:
-        if isinstance(raw.get(key), list):
-            data[key] = raw[key]
-
-    # Older version stored users/banks/transactions only. Keep them as orphaned records
-    # until the first account is registered; those records are then assigned to that user.
+    with zipfile.ZipFile(path, 'r') as archive:
+        names = set(archive.namelist())
+        for table, columns in TABLES.items():
+            filename = f'{table}.csv'
+            if filename not in names:
+                continue
+            with archive.open(filename, 'r') as raw:
+                text = io.TextIOWrapper(raw, encoding='utf-8', newline='')
+                reader = csv.DictReader(text)
+                data[table] = [_clean_row(table, row) for row in reader]
+                text.detach()
     return data
 
 
+def _migrate_legacy_json():
+    if not LEGACY_JSON.exists():
+        return empty_data()
+    try:
+        raw = json.loads(LEGACY_JSON.read_text(encoding='utf-8'))
+    except (json.JSONDecodeError, FileNotFoundError):
+        return empty_data()
+
+    # Previous versions may have stored a bare transaction list or the multi-user dict.
+    if isinstance(raw, list):
+        raw = {'banks': [], 'transactions': raw}
+    if not isinstance(raw, dict):
+        return empty_data()
+
+    data = empty_data()
+    for table in TABLES:
+        if isinstance(raw.get(table), list):
+            data[table] = raw[table]
+
+    # Keep old records usable by the first account created.
+    return data
+
+
+def load_data():
+    with DATA_LOCK:
+        if DATA_ARCHIVE.exists():
+            try:
+                return _read_archive(DATA_ARCHIVE)
+            except (zipfile.BadZipFile, OSError, UnicodeError):
+                pass
+
+        data = _migrate_legacy_json()
+        if any(data.values()):
+            try:
+                _write_archive(data, DATA_ARCHIVE)
+            except OSError:
+                pass
+        return data
+
+
 def save_data(data):
-    temp_file = DATA_FILE.with_suffix('.tmp')
-    temp_file.write_text(json.dumps(data, indent=2), encoding='utf-8')
-    temp_file.replace(DATA_FILE)
+    with DATA_LOCK:
+        _write_archive(data, DATA_ARCHIVE)
 
 
 def now_iso():
@@ -89,7 +156,6 @@ def find_user_by_email(data, email):
 
 
 def migrate_orphaned_records_to_user(data, user_id):
-    # Preserve data from the old single-user app when the first account is created.
     if len(data['users']) != 1:
         return
     bank_ids = set()
@@ -100,6 +166,12 @@ def migrate_orphaned_records_to_user(data, user_id):
             bank_ids.add(bank['id'])
     for item in data['transactions']:
         if not item.get('user_id') and item.get('bank_id') in bank_ids:
+            item['user_id'] = user_id
+    for item in data['transfers']:
+        if not item.get('user_id') and (item.get('from_bank_id') in bank_ids or item.get('to_bank_id') in bank_ids):
+            item['user_id'] = user_id
+    for item in data['periods']:
+        if not item.get('user_id'):
             item['user_id'] = user_id
 
 
@@ -148,6 +220,14 @@ class TransactionCreate(BaseModel):
     type: Literal['income', 'expense']
     amount: float = Field(gt=0)
     category: str = Field(min_length=1, max_length=50)
+    date: date
+    note: Optional[str] = Field(default='', max_length=200)
+
+
+class TransferCreate(BaseModel):
+    from_bank_id: str
+    to_bank_id: str
+    amount: float = Field(gt=0)
     date: date
     note: Optional[str] = Field(default='', max_length=200)
 
@@ -210,6 +290,10 @@ def user_transactions(data, user_id):
     return [t for t in data['transactions'] if t.get('user_id') == user_id]
 
 
+def user_transfers(data, user_id):
+    return [t for t in data['transfers'] if t.get('user_id') == user_id]
+
+
 def aggregate(items):
     income = round(sum(float(x['amount']) for x in items if x['type'] == 'income'), 2)
     expense = round(sum(float(x['amount']) for x in items if x['type'] == 'expense'), 2)
@@ -240,11 +324,47 @@ def period_transactions(data, user_id, period_id, bank_id=None):
     return result
 
 
+def period_transfers(data, user_id, period_id, bank_id=None):
+    period, _, periods, _ = find_period(data, user_id, period_id)
+    if not period:
+        raise HTTPException(status_code=404, detail='Financial month not found')
+    start = date.fromisoformat(period['start_date'])
+    next_start = None
+    for p in periods:
+        if p['start_date'] > period['start_date']:
+            next_start = date.fromisoformat(p['start_date'])
+            break
+    result = []
+    for item in user_transfers(data, user_id):
+        item_date = date.fromisoformat(item['date'])
+        if item_date < start:
+            continue
+        if next_start and item_date >= next_start:
+            continue
+        if bank_id and bank_id not in {item.get('from_bank_id'), item.get('to_bank_id')}:
+            continue
+        result.append(item)
+    return result
+
+
+def bank_balance(data, user_id, bank_id):
+    income = sum(float(t['amount']) for t in user_transactions(data, user_id) if t.get('bank_id') == bank_id and t.get('type') == 'income')
+    expense = sum(float(t['amount']) for t in user_transactions(data, user_id) if t.get('bank_id') == bank_id and t.get('type') == 'expense')
+    transfer_in = sum(float(t['amount']) for t in user_transfers(data, user_id) if t.get('to_bank_id') == bank_id)
+    transfer_out = sum(float(t['amount']) for t in user_transfers(data, user_id) if t.get('from_bank_id') == bank_id)
+    return round(income - expense + transfer_in - transfer_out, 2)
+
+
 @app.get('/')
 def root():
     if FRONTEND_DIST.exists() and (FRONTEND_DIST / 'index.html').exists():
         return FileResponse(FRONTEND_DIST / 'index.html')
     return {'message': 'Daily Income & Expense Tracker API is running'}
+
+
+@app.get('/health')
+def health():
+    return {'status': 'ok', 'storage': 'compressed-csv-zip'}
 
 
 @app.post('/auth/register')
@@ -255,23 +375,11 @@ def register(payload: RegisterPayload):
         raise HTTPException(status_code=409, detail='An account with this email already exists')
     user_id = str(uuid.uuid4())
     salt, password_hash = hash_password(payload.password)
-    user = {
-        'id': user_id,
-        'email': email,
-        'password_salt': salt,
-        'password_hash': password_hash,
-        'created_at': now_iso(),
-    }
+    user = {'id': user_id, 'email': email, 'password_salt': salt, 'password_hash': password_hash, 'created_at': now_iso()}
     data['users'].append(user)
     migrate_orphaned_records_to_user(data, user_id)
-    save_data(data)
     token = secrets.token_urlsafe(32)
-    data = load_data()
-    data['sessions'].append({
-        'token': token,
-        'user_id': user_id,
-        'expires_at': (datetime.utcnow() + timedelta(days=TOKEN_DAYS)).isoformat() + 'Z',
-    })
+    data['sessions'].append({'token': token, 'user_id': user_id, 'expires_at': (datetime.utcnow() + timedelta(days=TOKEN_DAYS)).isoformat() + 'Z'})
     save_data(data)
     return {'token': token, 'user': {'id': user_id, 'email': email}}
 
@@ -285,11 +393,7 @@ def login(payload: LoginPayload):
         raise HTTPException(status_code=401, detail='Invalid email or password')
     token = secrets.token_urlsafe(32)
     data['sessions'] = [s for s in data['sessions'] if s.get('user_id') != user['id']]
-    data['sessions'].append({
-        'token': token,
-        'user_id': user['id'],
-        'expires_at': (datetime.utcnow() + timedelta(days=TOKEN_DAYS)).isoformat() + 'Z',
-    })
+    data['sessions'].append({'token': token, 'user_id': user['id'], 'expires_at': (datetime.utcnow() + timedelta(days=TOKEN_DAYS)).isoformat() + 'Z'})
     save_data(data)
     return {'token': token, 'user': {'id': user['id'], 'email': user['email']}}
 
@@ -332,8 +436,9 @@ def delete_bank(bank_id: str, user=Depends(current_user)):
         raise HTTPException(status_code=404, detail='Bank not found')
     data['banks'] = [b for b in data['banks'] if not (b['id'] == bank_id and b.get('user_id') == user['id'])]
     data['transactions'] = [t for t in data['transactions'] if not (t.get('bank_id') == bank_id and t.get('user_id') == user['id'])]
+    data['transfers'] = [t for t in data['transfers'] if not (t.get('from_bank_id') == bank_id or t.get('to_bank_id') == bank_id) or t.get('user_id') != user['id']]
     save_data(data)
-    return {'message': 'Bank and its transactions deleted'}
+    return {'message': 'Bank, transactions and related transfers deleted'}
 
 
 @app.get('/periods')
@@ -351,12 +456,7 @@ def create_period(payload: PeriodCreate, user=Depends(current_user)):
         raise HTTPException(status_code=409, detail='A financial month already starts on this date')
     if periods and payload.start_date <= date.fromisoformat(periods[-1]['start_date']):
         raise HTTPException(status_code=400, detail='New month start date must be after the current month start date')
-    period = {
-        'id': str(uuid.uuid4()),
-        'user_id': user['id'],
-        'start_date': payload.start_date.isoformat(),
-        'created_at': now_iso(),
-    }
+    period = {'id': str(uuid.uuid4()), 'user_id': user['id'], 'start_date': payload.start_date.isoformat(), 'created_at': now_iso()}
     data['periods'].append(period)
     save_data(data)
     periods = user_periods(data, user['id'])
@@ -365,12 +465,7 @@ def create_period(payload: PeriodCreate, user=Depends(current_user)):
 
 
 @app.get('/transactions')
-def get_transactions(
-    bank_id: Optional[str] = None,
-    transaction_type: Optional[Literal['income', 'expense']] = None,
-    period_id: Optional[str] = None,
-    user=Depends(current_user),
-):
+def get_transactions(bank_id: Optional[str] = None, transaction_type: Optional[Literal['income', 'expense']] = None, period_id: Optional[str] = None, user=Depends(current_user)):
     data = load_data()
     items = period_transactions(data, user['id'], period_id, bank_id) if period_id else user_transactions(data, user['id'])
     if bank_id and not any(b['id'] == bank_id and b.get('user_id') == user['id'] for b in data['banks']):
@@ -388,12 +483,7 @@ def create_transaction(payload: TransactionCreate, user=Depends(current_user)):
     period = period_for_date(data, user['id'], payload.date)
     if not period:
         raise HTTPException(status_code=400, detail='Start a financial month before recording transactions for this date')
-    item = {
-        'id': str(uuid.uuid4()),
-        'user_id': user['id'],
-        **payload.model_dump(mode='json'),
-        'created_at': now_iso(),
-    }
+    item = {'id': str(uuid.uuid4()), 'user_id': user['id'], **payload.model_dump(mode='json'), 'created_at': now_iso()}
     data['transactions'].append(item)
     save_data(data)
     return item
@@ -413,7 +503,10 @@ def delete_transaction(transaction_id: str, user=Depends(current_user)):
 def get_summary(bank_id: Optional[str] = None, period_id: Optional[str] = None, user=Depends(current_user)):
     data = load_data()
     items = period_transactions(data, user['id'], period_id, bank_id) if period_id else user_transactions(data, user['id'])
-    return aggregate(items)
+    result = aggregate(items)
+    if bank_id:
+        result['bank_balance'] = bank_balance(data, user['id'], bank_id)
+    return result
 
 
 @app.get('/monthly-summary')
@@ -428,6 +521,50 @@ def monthly_summary(bank_id: Optional[str] = None, user=Depends(current_user)):
     return list(reversed(result))
 
 
+@app.get('/transfers')
+def get_transfers(bank_id: Optional[str] = None, period_id: Optional[str] = None, user=Depends(current_user)):
+    data = load_data()
+    items = period_transfers(data, user['id'], period_id, bank_id) if period_id else user_transfers(data, user['id'])
+    bank_names = {b['id']: b['name'] for b in user_banks(data, user['id'])}
+    result = []
+    for item in sorted(items, key=lambda x: (x['date'], x['created_at']), reverse=True):
+        result.append({**item, 'from_bank_name': bank_names.get(item['from_bank_id'], 'Unknown'), 'to_bank_name': bank_names.get(item['to_bank_id'], 'Unknown')})
+    return result
+
+
+@app.post('/transfers')
+def create_transfer(payload: TransferCreate, user=Depends(current_user)):
+    data = load_data()
+    if payload.from_bank_id == payload.to_bank_id:
+        raise HTTPException(status_code=400, detail='Choose two different bank accounts')
+    valid_ids = {b['id'] for b in user_banks(data, user['id'])}
+    if payload.from_bank_id not in valid_ids or payload.to_bank_id not in valid_ids:
+        raise HTTPException(status_code=404, detail='Both bank accounts must belong to your profile')
+    period = period_for_date(data, user['id'], payload.date)
+    if not period:
+        raise HTTPException(status_code=400, detail='Start a financial month before recording a transfer for this date')
+    item = {
+        'id': str(uuid.uuid4()),
+        'user_id': user['id'],
+        **payload.model_dump(mode='json'),
+        'created_at': now_iso(),
+    }
+    data['transfers'].append(item)
+    save_data(data)
+    bank_names = {b['id']: b['name'] for b in user_banks(data, user['id'])}
+    return {**item, 'from_bank_name': bank_names.get(item['from_bank_id'], 'Unknown'), 'to_bank_name': bank_names.get(item['to_bank_id'], 'Unknown')}
+
+
+@app.delete('/transfers/{transfer_id}')
+def delete_transfer(transfer_id: str, user=Depends(current_user)):
+    data = load_data()
+    if not any(x['id'] == transfer_id and x.get('user_id') == user['id'] for x in data['transfers']):
+        raise HTTPException(status_code=404, detail='Transfer not found')
+    data['transfers'] = [x for x in data['transfers'] if not (x['id'] == transfer_id and x.get('user_id') == user['id'])]
+    save_data(data)
+    return {'message': 'Transfer deleted'}
+
+
 def percentage_change(current, previous):
     if previous == 0:
         return None if current == 0 else 100
@@ -438,12 +575,13 @@ def percentage_change(current, previous):
 def dashboard(user=Depends(current_user)):
     data = load_data()
     periods = user_periods(data, user['id'])
+    all_tx = user_transactions(data, user['id'])
     if not periods:
         return {
             'current_period': None,
             'previous_period': None,
             'comparison': {'expense_change': 0, 'expense_change_pct': None, 'income_change': 0, 'income_change_pct': None},
-            'total_savings': round(sum(float(t['amount']) if t['type'] == 'income' else -float(t['amount']) for t in user_transactions(data, user['id'])), 2),
+            'total_savings': round(sum(float(t['amount']) if t['type'] == 'income' else -float(t['amount']) for t in all_tx), 2),
         }
     current = periods[-1]
     current_index = len(periods) - 1
@@ -467,11 +605,35 @@ def dashboard(user=Depends(current_user)):
             'income_change': round(current_payload['income'] - prev_income, 2),
             'income_change_pct': percentage_change(current_payload['income'], prev_income),
         },
-        'total_savings': round(sum(float(t['amount']) if t['type'] == 'income' else -float(t['amount']) for t in user_transactions(data, user['id'])), 2),
+        'total_savings': round(sum(float(t['amount']) if t['type'] == 'income' else -float(t['amount']) for t in all_tx), 2),
     }
 
 
-# Optional single-origin production hosting.
+@app.get('/backup/export')
+def export_backup(user=Depends(current_user)):
+    data = load_data()
+    uid = user['id']
+    payload = empty_data()
+    payload['users'] = [{'id': user['id'], 'email': user['email'], 'password_salt': '', 'password_hash': '', 'created_at': user.get('created_at', '')}]
+    payload['banks'] = [x for x in data['banks'] if x.get('user_id') == uid]
+    payload['transactions'] = [x for x in data['transactions'] if x.get('user_id') == uid]
+    payload['periods'] = [x for x in data['periods'] if x.get('user_id') == uid]
+    payload['transfers'] = [x for x in data['transfers'] if x.get('user_id') == uid]
+    payload['sessions'] = []
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        for table, columns in TABLES.items():
+            text_buffer = io.StringIO(newline='')
+            writer = csv.DictWriter(text_buffer, fieldnames=columns, extrasaction='ignore')
+            writer.writeheader()
+            for item in payload[table]:
+                writer.writerow({key: '' if item.get(key) is None else item.get(key, '') for key in columns})
+            archive.writestr(f'{table}.csv', text_buffer.getvalue().encode('utf-8'))
+    out.seek(0)
+    filename = f"daily-money-tracker-{user['id'][:8]}-backup.zip"
+    return StreamingResponse(out, media_type='application/zip', headers={'Content-Disposition': f'attachment; filename="{filename}"'})
+
+
 if FRONTEND_DIST.exists():
     app.mount('/assets', StaticFiles(directory=FRONTEND_DIST / 'assets'), name='assets')
 
