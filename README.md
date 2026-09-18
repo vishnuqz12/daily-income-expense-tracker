@@ -1,21 +1,41 @@
-# Daily Income & Expense Tracker — Bank + Monthly + iPhone PWA
+# Daily Money Tracker — Multi-user + Dashboard + Salary-day Months + PWA + Compressed CSV Storage + Self Transfer
 
-## Features
-- Add multiple bank accounts; each bank is a separate tab.
-- Separate Add Expense and Add Income actions for the selected bank.
-- Record transactions by date, category and note.
-- Select any month to view the expenses/income previously recorded for that month.
-- Monthly Expense History shows every recorded month and its savings.
-- Monthly savings = income - expense.
-- NET TOTAL SAVINGS at the top = sum of savings across all recorded months for the selected bank.
-- Responsive mobile layout with iPhone-friendly touch controls and safe-area spacing.
-- Installable PWA with app manifest, service worker and iPhone Home Screen icon.
-- API URL can be configured with `VITE_API_URL`; by default the frontend uses the current origin, which is convenient when the frontend and backend are hosted together.
-- JSON storage; no database required.
+This version keeps the existing bank tabs, separate Add Income/Add Expense actions, monthly history, savings calculations, multi-user login, dashboard, salary-day month workflow and iPhone PWA support.
+
+## New in this version
+
+- **Compressed CSV storage:** backend data is stored in `backend/data/finance_data.zip`. The ZIP contains CSV files for users, sessions, banks, transactions, financial periods and self transfers.
+- **Legacy migration:** if the previous `finance.json` exists and the new ZIP does not, the app migrates the old data into the compressed CSV bundle on first use.
+- **Self transfer:** move money from one of your bank accounts to another. Transfers do not count as income or expense and therefore do not change savings totals. They do change the displayed bank balance.
+- **Automatic bank dropdown update:** when a new bank is added, it immediately becomes available as a transfer destination/source.
+- **Personal backup:** the signed-in user can download a ZIP backup containing their own CSV files from the **Backup** button.
+
+## Financial month behavior
+
+A financial month starts only when the user chooses **Start New Month** and supplies a start date.
+
+Example for salary on the 25th:
+
+- 25 Sep 2026 → 24 Oct 2026
+- 25 Oct 2026 → 24 Nov 2026
+- 25 Nov 2026 → 24 Dec 2026
+
+The application never resets the financial month automatically on the first day of a calendar month.
+
+## Self transfer behavior
+
+Example:
+
+- From: ICICI Bank
+- To: HDFC Bank
+- Amount: ₹10,000
+
+The transfer is recorded separately from income/expense. Overall savings stays unchanged, while the bank-balance calculation changes by -₹10,000 for ICICI and +₹10,000 for HDFC.
 
 ## Local development
 
 ### Backend
+
 ```bash
 cd backend
 python -m venv venv
@@ -26,35 +46,73 @@ uvicorn main:app --reload
 ```
 
 ### Frontend
+
 In a second terminal:
+
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
-Open the Vite URL, normally http://localhost:5173.
 
-On an iPhone, the development server must be reachable from the phone over your local network; for normal PWA installation, use an HTTPS production deployment.
+Open the Vite URL, normally `http://localhost:5173`.
 
-## Production / iPhone PWA
-PWA installation on iPhone requires the production site to be served over HTTPS.
+## Render deployment
 
-1. Build the frontend:
+### Backend Web Service
+
+Root directory:
+
+```text
+backend
+```
+
+Build command:
+
 ```bash
-cd frontend
-npm install
-npm run build
+pip install -r requirements.txt
 ```
 
-2. Host the generated `frontend/dist` folder over HTTPS.
+Start command:
 
-3. If the FastAPI backend is hosted at a different URL, create `frontend/.env` before the build:
-```env
-VITE_API_URL=https://your-api.example.com
+```bash
+uvicorn main:app --host 0.0.0.0 --port $PORT
 ```
 
-4. Open the HTTPS frontend URL in Safari on the iPhone.
+### Frontend Static Site
 
-5. Tap **Share → Add to Home Screen → Add**.
+Root directory:
 
-The app icon and standalone PWA metadata are already included. The service worker caches the app shell and static assets so the installed shell can reopen even when the network is temporarily unavailable; financial API data still requires the backend to be reachable.
+```text
+frontend
+```
+
+Build command:
+
+```bash
+npm install && npm run build
+```
+
+Publish directory:
+
+```text
+dist
+```
+
+Set this frontend environment variable in Render:
+
+```text
+VITE_API_URL=https://YOUR-BACKEND.onrender.com
+```
+
+## Important storage limitation on Render Free
+
+The compressed CSV bundle improves the storage format and makes backups easy, but it **does not make Render Free's filesystem persistent**. A Render instance can be replaced/restarted, and files stored only on its local filesystem can disappear.
+
+For important financial records, keep the **Backup** download and move the storage layer to a persistent managed database such as PostgreSQL/Supabase when you are ready. The current user-facing behavior can remain the same when that storage layer is changed.
+
+## iPhone PWA
+
+The PWA manifest, service worker, mobile layout and iPhone Home Screen support remain included.
+
+Open the HTTPS frontend in Safari → **Share → Add to Home Screen**.
