@@ -1,101 +1,42 @@
-# Daily Money Tracker — PostgreSQL Edition
+# Daily Money Tracker — Local Excel PWA
 
-A mobile-first React PWA with a FastAPI backend and PostgreSQL persistence.
+This edition is fully local-first. There is **no FastAPI backend and no cloud database**. Each account is an Excel `.xlsx` workbook stored by the user on their own device.
 
-## What is included
+## Included features
+- Local account creation with email + password.
+- One Excel workbook per person/account.
+- Open an existing workbook and unlock it with its password.
+- Bank tabs with separate income/expense tracking.
+- Manual financial months based on a user-entered start date (for example, 25th to 24th).
+- Dashboard with current vs previous financial month comparison.
+- Net total savings across all banks and started months.
+- Self bank-to-bank transfers that do not count as income or expense.
+- Monthly history, transaction search, delete actions, bank balances.
+- Excel Save / Export Copy.
+- iPhone-ready PWA UI.
+- Uses SheetJS in the browser to read and write XLSX files (npm package `xlsx`).
 
-- Multi-user accounts with email/password login.
-- Per-user bank accounts, financial months, income, expenses, transfers and savings.
-- Financial months start only when the user explicitly chooses a date (for example the 25th for a salary cycle).
-- Dashboard comparing the two most recent financial months.
-- Self transfer between the user's own bank accounts. Transfers do not count as income or expenses.
-- iPhone PWA manifest, icons and service worker.
-- PostgreSQL storage with foreign keys, indexes, decimal money columns and connection pooling.
-- Passwords are stored as PBKDF2 hashes; session tokens are stored as SHA-256 hashes.
-- User backup export as a ZIP containing CSV files.
-- Legacy JSON / compressed-CSV storage migration when a compatible local file is present.
+## Important local-file limitation
+A normal web page cannot silently read arbitrary files from an iPhone's Files storage. On browsers without the File System Access API (including Safari in the current SheetJS compatibility guidance), the user must choose the Excel file again when opening the app. On supporting Chromium browsers, the app can remember an authorized file handle and auto-open the linked workbook when permission is still granted.
 
-## Production architecture
+## Create an account
+1. Open the app.
+2. Select **Create account**.
+3. Enter email and password.
+4. The app creates `DailyMoneyTracker_<email>.xlsx` and saves/downloads it.
+5. Keep the workbook in your Files/OneDrive/iCloud Drive as your source of truth.
 
-```text
-iPhone / Browser
-      |
-      v
-Render Static Site (React PWA)
-      |
-      | HTTPS / REST API
-      v
-Render Web Service (FastAPI)
-      |
-      | PostgreSQL connection
-      v
-Supabase PostgreSQL (Free plan)
-```
+## iPhone workflow
+1. Open the PWA in Safari.
+2. Create the account once and save the generated Excel workbook into the Files app.
+3. Use **Open account → Choose Excel account** whenever Safari asks you to choose the workbook.
+4. After making changes, tap **Save Excel**. Safari downloads an updated workbook; replace the previous copy in Files with the newest copy.
 
-## Local development
+## Deployment on Render
+Because there is no backend, deploy this project as a **single Render Static Site**:
+- Root Directory: `frontend`
+- Build Command: `npm install && npm run build`
+- Publish Directory: `dist`
+- No environment variables are required.
 
-Create a virtual environment and install the backend requirements. Set `DATABASE_URL` to a PostgreSQL database. `DB_SSLMODE=prefer` is suitable for a local PostgreSQL instance; `require` is recommended for hosted databases.
-
-Run the backend from the `backend` folder:
-
-```bash
-uvicorn main:app --reload --port 8000
-```
-
-Run the frontend from `frontend` using your existing Vite workflow.
-
-## Supabase setup
-
-1. Create a Supabase project.
-2. Open **Connect** and copy the **Session pooler** PostgreSQL connection string. The shared pooler is IPv4-compatible and uses port `5432` in session mode.
-3. Replace `[YOUR-PASSWORD]` with the database password. Keep the connection string secret.
-4. In Render, open the FastAPI service → **Environment** and add:
-
-```text
-DATABASE_URL=<your Supabase session-pooler connection string>
-CORS_ORIGINS=https://YOUR-FRONTEND.onrender.com
-DB_SSLMODE=require
-```
-
-5. Deploy the backend. Tables are created automatically on startup.
-
-## Render settings
-
-### Backend Web Service
-
-```text
-Root Directory: backend
-Build Command: pip install -r requirements.txt
-Start Command: uvicorn main:app --host 0.0.0.0 --port $PORT
-Health Check Path: /health
-```
-
-### Frontend Static Site
-
-```text
-Root Directory: frontend
-Build Command: npm install && npm run build
-Publish Directory: dist
-```
-
-Frontend environment variable:
-
-```text
-VITE_API_URL=https://YOUR-BACKEND.onrender.com
-```
-
-## Migrating an old CSV backup
-
-Before replacing the old Render backend, use the old app's **Backup** button and save the ZIP locally.
-
-Create the destination user in the new PostgreSQL-backed app first. Then from the `backend` directory, set `DATABASE_URL` to your Supabase connection string and run:
-
-```bash
-python scripts/import_backup.py path/to/your-backup.zip --email you@example.com
-```
-
-Passwords are not imported from the backup. The destination account keeps its new password. The backup's banks, periods, transactions and transfers are imported into that account.
-
-## Data persistence note
-
-PostgreSQL fixes the main problem with Render's local file storage: transactions are no longer dependent on the web service's local filesystem. Supabase's current Free plan includes a Postgres database with a 500 MB database quota, but Free projects can be paused after 1 week of inactivity and the plan does not include automatic database backups. Keep the in-app CSV backup as an additional safety copy.
+You can also host the static `frontend` on other HTTPS static hosting providers.

@@ -1,7 +1,7 @@
 {
   "name": "Daily Money Tracker",
   "short_name": "Money Tracker",
-  "description": "Track daily income, expenses, bank accounts, monthly history and savings.",
+  "description": "A local-first personal finance tracker using your own Excel workbook.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
@@ -9,17 +9,7 @@
   "background_color": "#f4f7fb",
   "theme_color": "#3157c8",
   "icons": [
-    {
-      "src": "/icons/icon-192.png",
-      "sizes": "192x192",
-      "type": "image/png",
-      "purpose": "any maskable"
-    },
-    {
-      "src": "/icons/icon-512.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "any maskable"
-    }
+    {"src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
+    {"src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
   ]
 }
