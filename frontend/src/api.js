@@ -46,6 +46,18 @@ export const api = {
   addTransfer: (data) => request('/transfers', { method: 'POST', body: JSON.stringify(data) }),
   deleteTransfer: (id) => request(`/transfers/${id}`, { method: 'DELETE' }),
   getDashboard: () => request('/dashboard'),
+  importBackup: async (file) => {
+    const token = getToken();
+    const form = new FormData();
+    form.append('file', file);
+    const response = await fetch(`${API_URL}/backup/import`, { method: 'POST', headers: token ? { Authorization: `Bearer ${token}` } : {}, body: form });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      if (response.status === 401) setToken('');
+      throw new Error(error.detail || 'Could not restore backup');
+    }
+    return response.json();
+  },
   downloadBackup: async () => {
     const token = getToken();
     const response = await fetch(`${API_URL}/backup/export`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });

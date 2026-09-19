@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: daily-income-expense-api
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: DB_SSLMODE
+        value: require
+      - key: SESSION_DAYS
+        value: "30"
+      - key: PBKDF2_ITERATIONS
+        value: "220000"
+      - key: DB_POOL_SIZE
+        value: "5"
+      - key: DB_MAX_OVERFLOW
+        value: "5"
+      - key: DB_POOL_RECYCLE
+        value: "300"

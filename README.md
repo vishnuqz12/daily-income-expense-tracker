@@ -1,118 +1,101 @@
-# Daily Money Tracker — Multi-user + Dashboard + Salary-day Months + PWA + Compressed CSV Storage + Self Transfer
+# Daily Money Tracker — PostgreSQL Edition
 
-This version keeps the existing bank tabs, separate Add Income/Add Expense actions, monthly history, savings calculations, multi-user login, dashboard, salary-day month workflow and iPhone PWA support.
+A mobile-first React PWA with a FastAPI backend and PostgreSQL persistence.
 
-## New in this version
+## What is included
 
-- **Compressed CSV storage:** backend data is stored in `backend/data/finance_data.zip`. The ZIP contains CSV files for users, sessions, banks, transactions, financial periods and self transfers.
-- **Legacy migration:** if the previous `finance.json` exists and the new ZIP does not, the app migrates the old data into the compressed CSV bundle on first use.
-- **Self transfer:** move money from one of your bank accounts to another. Transfers do not count as income or expense and therefore do not change savings totals. They do change the displayed bank balance.
-- **Automatic bank dropdown update:** when a new bank is added, it immediately becomes available as a transfer destination/source.
-- **Personal backup:** the signed-in user can download a ZIP backup containing their own CSV files from the **Backup** button.
+- Multi-user accounts with email/password login.
+- Per-user bank accounts, financial months, income, expenses, transfers and savings.
+- Financial months start only when the user explicitly chooses a date (for example the 25th for a salary cycle).
+- Dashboard comparing the two most recent financial months.
+- Self transfer between the user's own bank accounts. Transfers do not count as income or expenses.
+- iPhone PWA manifest, icons and service worker.
+- PostgreSQL storage with foreign keys, indexes, decimal money columns and connection pooling.
+- Passwords are stored as PBKDF2 hashes; session tokens are stored as SHA-256 hashes.
+- User backup export as a ZIP containing CSV files.
+- Legacy JSON / compressed-CSV storage migration when a compatible local file is present.
 
-## Financial month behavior
+## Production architecture
 
-A financial month starts only when the user chooses **Start New Month** and supplies a start date.
-
-Example for salary on the 25th:
-
-- 25 Sep 2026 → 24 Oct 2026
-- 25 Oct 2026 → 24 Nov 2026
-- 25 Nov 2026 → 24 Dec 2026
-
-The application never resets the financial month automatically on the first day of a calendar month.
-
-## Self transfer behavior
-
-Example:
-
-- From: ICICI Bank
-- To: HDFC Bank
-- Amount: ₹10,000
-
-The transfer is recorded separately from income/expense. Overall savings stays unchanged, while the bank-balance calculation changes by -₹10,000 for ICICI and +₹10,000 for HDFC.
+```text
+iPhone / Browser
+      |
+      v
+Render Static Site (React PWA)
+      |
+      | HTTPS / REST API
+      v
+Render Web Service (FastAPI)
+      |
+      | PostgreSQL connection
+      v
+Supabase PostgreSQL (Free plan)
+```
 
 ## Local development
 
-### Backend
+Create a virtual environment and install the backend requirements. Set `DATABASE_URL` to a PostgreSQL database. `DB_SSLMODE=prefer` is suitable for a local PostgreSQL instance; `require` is recommended for hosted databases.
+
+Run the backend from the `backend` folder:
 
 ```bash
-cd backend
-python -m venv venv
-# Windows: venv\Scripts\activate
-# macOS/Linux: source venv/bin/activate
-pip install -r requirements.txt
-uvicorn main:app --reload
+uvicorn main:app --reload --port 8000
 ```
 
-### Frontend
+Run the frontend from `frontend` using your existing Vite workflow.
 
-In a second terminal:
+## Supabase setup
 
-```bash
-cd frontend
-npm install
-npm run dev
+1. Create a Supabase project.
+2. Open **Connect** and copy the **Session pooler** PostgreSQL connection string. The shared pooler is IPv4-compatible and uses port `5432` in session mode.
+3. Replace `[YOUR-PASSWORD]` with the database password. Keep the connection string secret.
+4. In Render, open the FastAPI service → **Environment** and add:
+
+```text
+DATABASE_URL=<your Supabase session-pooler connection string>
+CORS_ORIGINS=https://YOUR-FRONTEND.onrender.com
+DB_SSLMODE=require
 ```
 
-Open the Vite URL, normally `http://localhost:5173`.
+5. Deploy the backend. Tables are created automatically on startup.
 
-## Render deployment
+## Render settings
 
 ### Backend Web Service
 
-Root directory:
-
 ```text
-backend
-```
-
-Build command:
-
-```bash
-pip install -r requirements.txt
-```
-
-Start command:
-
-```bash
-uvicorn main:app --host 0.0.0.0 --port $PORT
+Root Directory: backend
+Build Command: pip install -r requirements.txt
+Start Command: uvicorn main:app --host 0.0.0.0 --port $PORT
+Health Check Path: /health
 ```
 
 ### Frontend Static Site
 
-Root directory:
-
 ```text
-frontend
+Root Directory: frontend
+Build Command: npm install && npm run build
+Publish Directory: dist
 ```
 
-Build command:
-
-```bash
-npm install && npm run build
-```
-
-Publish directory:
-
-```text
-dist
-```
-
-Set this frontend environment variable in Render:
+Frontend environment variable:
 
 ```text
 VITE_API_URL=https://YOUR-BACKEND.onrender.com
 ```
 
-## Important storage limitation on Render Free
+## Migrating an old CSV backup
 
-The compressed CSV bundle improves the storage format and makes backups easy, but it **does not make Render Free's filesystem persistent**. A Render instance can be replaced/restarted, and files stored only on its local filesystem can disappear.
+Before replacing the old Render backend, use the old app's **Backup** button and save the ZIP locally.
 
-For important financial records, keep the **Backup** download and move the storage layer to a persistent managed database such as PostgreSQL/Supabase when you are ready. The current user-facing behavior can remain the same when that storage layer is changed.
+Create the destination user in the new PostgreSQL-backed app first. Then from the `backend` directory, set `DATABASE_URL` to your Supabase connection string and run:
 
-## iPhone PWA
+```bash
+python scripts/import_backup.py path/to/your-backup.zip --email you@example.com
+```
 
-The PWA manifest, service worker, mobile layout and iPhone Home Screen support remain included.
+Passwords are not imported from the backup. The destination account keeps its new password. The backup's banks, periods, transactions and transfers are imported into that account.
 
-Open the HTTPS frontend in Safari → **Share → Add to Home Screen**.
+## Data persistence note
+
+PostgreSQL fixes the main problem with Render's local file storage: transactions are no longer dependent on the web service's local filesystem. Supabase's current Free plan includes a Postgres database with a 500 MB database quota, but Free projects can be paused after 1 week of inactivity and the plan does not include automatic database backups. Keep the in-app CSV backup as an additional safety copy.

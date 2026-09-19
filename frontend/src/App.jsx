@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, getToken, setToken } from './api';
 
 const incomeCategories = ['Salary','Freelance','Business','Interest','Other'];
@@ -283,6 +283,7 @@ function App() {
   const [dashboard,setDashboard] = useState(null);
   const [dashboardLoading,setDashboardLoading] = useState(true);
   const [globalError,setGlobalError] = useState('');
+  const importInputRef = useRef(null);
 
   async function loadDashboard() {
     if (!getToken()) return;
@@ -308,12 +309,23 @@ function App() {
       document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
     }catch(e){setGlobalError(e.message)}
   }
+  async function restoreBackup(event){
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (!window.confirm('Restore this backup into your current account? Existing records will be kept; matching record IDs will be skipped.')) return;
+    try{
+      const result = await api.importBackup(file);
+      setGlobalError(`Backup restored: ${result.banks_added} bank(s), ${result.periods_added} month(s), ${result.transactions_added} transaction(s), ${result.transfers_added} transfer(s).`);
+      window.location.reload();
+    }catch(e){setGlobalError(e.message)}
+  }
   if (!token || !user) return <AuthScreen onSuccess={afterLogin}/>;
 
   return <div className="app">
     <header className="topbar">
       <div><p className="eyebrow">PERSONAL FINANCE</p><h1>Daily Money Tracker</h1><p className="subtitle">Track every bank account, every month, and your total savings.</p></div>
-      <div className="profile-chip"><div className="profile-avatar">{user.email.slice(0,1).toUpperCase()}</div><div><strong>{user.email}</strong><span>Your private profile</span></div><button onClick={backup}>Backup</button><button onClick={logout}>Log out</button></div>
+      <div className="profile-chip"><div className="profile-avatar">{user.email.slice(0,1).toUpperCase()}</div><div><strong>{user.email}</strong><span>Your private profile</span></div><input ref={importInputRef} type="file" accept=".zip,application/zip" onChange={restoreBackup} style={{display:'none'}}/><button onClick={()=>importInputRef.current?.click()}>Restore</button><button onClick={backup}>Backup</button><button onClick={logout}>Log out</button></div>
     </header>
 
     {globalError && <div className="error">{globalError}</div>}
