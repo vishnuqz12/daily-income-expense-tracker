@@ -1,11 +1,12 @@
 import * as XLSX from 'xlsx';
 
-const DB_NAME = 'daily-money-tracker-local';
-const STORE_NAME = 'files';
-const HANDLE_KEY = 'active-workbook-handle';
+const DB_NAME = 'daily-money-tracker-indexeddb';
+const DB_VERSION = 1;
+const ACCOUNT_STORE = 'accounts';
+const SESSION_STORE = 'session';
+const CURRENT_SESSION_KEY = 'current';
 
-export const APP_VERSION = '3.0.0-local-excel';
-export const WORKBOOK_SHEETS = ['Profile', 'Banks', 'Periods', 'Transactions', 'Transfers'];
+export const APP_VERSION = '4.0.0-indexeddb';
 
 export const emptyData = () => ({
   profile: null,
@@ -17,213 +18,475 @@ export const emptyData = () => ({
 
 function openDB() {
   return new Promise((resolve, reject) => {
-    if (!('indexedDB' in window)) return resolve(null);
-    const request = indexedDB.open(DB_NAME, 1);
+    if (!('indexedDB' in window)) {
+      reject(new Error('IndexedDB is not available in this browser.'));
+      return;
+    }
+
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+
     request.onupgradeneeded = () => {
       const db = request.result;
-      if (!db.objectStoreNames.contains(STORE_NAME)) db.createObjectStore(STORE_NAME);
+
+      let accounts;
+      if (!db.objectStoreNames.contains(ACCOUNT_STORE)) {
+        accounts = db.createObjectStore(ACCOUNT_STORE, { keyPath: 'userId' });
+        accounts.createIndex('email', 'email', { unique: true });
+      } else {
+        accounts = request.transaction.objectStore(ACCOUNT_STORE);
+        if (!accounts.indexNames.contains('email')) {
+          accounts.createIndex('email', 'email', { unique: true });
+        }
+      }
+
+      if (!db.objectStoreNames.contains(SESSION_STORE)) {
+        db.createObjectStore(SESSION_STORE, { keyPath: 'key' });
+      }
     };
+
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
+    request.onerror = () => reject(request.error || new Error('Could not open IndexedDB.'));
+    request.onblocked = () => reject(new Error('IndexedDB is blocked by another browser tab. Close the other tab and try again.'));
   });
 }
 
-export async function saveFileHandle(handle) {
+async function withStore(storeName, mode, operation) {
   const db = await openDB();
-  if (!db) return false;
+
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    tx.objectStore(STORE_NAME).put(handle, HANDLE_KEY);
-    tx.oncomplete = () => resolve(true);
-    tx.onerror = () => reject(tx.error);
+    const transaction = db.transaction(storeName, mode);
+    const store = transaction.objectStore(storeName);
+
+    let result;
+
+    try {
+      result = operation(store, transaction);
+    } catch (error) {
+      db.close();
+      reject(error);
+      return;
+    }
+
+    transaction.oncomplete = () => {
+      db.close();
+      resolve(result);
+    };
+
+    transaction.onerror = () => {
+      db.close();
+      reject(transaction.error || new Error('IndexedDB transaction failed.'));
+    };
+
+    transaction.onabort = () => {
+      db.close();
+      reject(transaction.error || new Error('IndexedDB transaction was aborted.'));
+    };
   });
 }
 
-export async function getFileHandle() {
+function requestValue(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('IndexedDB request failed.'));
+  });
+}
+
+function randomBytes(size = 16) {
+  return crypto.getRandomValues(new Uint8Array(size));
+}
+
+function bytesToHex(bytes) {
+  return [...bytes]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+function hexToBytes(hex) {
+  return new Uint8Array((String(hex || '').match(/.{1,2}/g) || []).map((part) => parseInt(part, 16)));
+}
+
+async function hashPassword(password, saltBytes, iterations = 220000) {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(password),
+    'PBKDF2',
+    false,
+    ['deriveBits'],
+  );
+
+  const bits = await crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      salt: saltBytes,
+      iterations,
+      hash: 'SHA-256',
+    },
+    key,
+    256,
+  );
+
+  return bytesToHex(new Uint8Array(bits));
+}
+
+async function createVerifier(password) {
+  const salt = randomBytes(16);
+  const hash = await hashPassword(password, salt);
+
+  return {
+    salt: bytesToHex(salt),
+    hash,
+  };
+}
+
+async function verifyPassword(password, account) {
+  try {
+    const hash = await hashPassword(password, hexToBytes(account.passwordSalt));
+    return hash === account.passwordHash;
+  } catch {
+    return false;
+  }
+}
+
+function normalizeEmail(email) {
+  return String(email || '').trim().toLowerCase();
+}
+
+function validateCredentials(email, password) {
+  if (!email || !email.includes('@')) {
+    throw new Error('Enter a valid email address.');
+  }
+
+  if (password.length < 8) {
+    throw new Error('Password must be at least 8 characters.');
+  }
+}
+
+function sanitizeData(data) {
+  return {
+    profile: data.profile || null,
+    banks: Array.isArray(data.banks) ? data.banks : [],
+    periods: Array.isArray(data.periods) ? data.periods : [],
+    transactions: Array.isArray(data.transactions) ? data.transactions : [],
+    transfers: Array.isArray(data.transfers) ? data.transfers : [],
+  };
+}
+
+function buildPublicData(account) {
+  return sanitizeData(account.data || {
+    ...emptyData(),
+    profile: {
+      userId: account.userId,
+      email: account.email,
+      createdAt: account.createdAt,
+    },
+  });
+}
+
+export async function createLocalAccount(email, password) {
+  const normalizedEmail = normalizeEmail(email);
+  validateCredentials(normalizedEmail, password);
+
+  const existing = await getAccountByEmail(normalizedEmail);
+  if (existing) {
+    throw new Error('An account with this email already exists.');
+  }
+
+  const verifier = await createVerifier(password);
+  const now = new Date().toISOString();
+  const userId = crypto.randomUUID();
+
+  const data = {
+    ...emptyData(),
+    profile: {
+      userId,
+      email: normalizedEmail,
+      createdAt: now,
+    },
+  };
+
+  const account = {
+    userId,
+    email: normalizedEmail,
+    passwordSalt: verifier.salt,
+    passwordHash: verifier.hash,
+    createdAt: now,
+    data,
+  };
+
+  await withStore(ACCOUNT_STORE, 'readwrite', (store) => {
+    store.add(account);
+  });
+
+  await setActiveSession(userId);
+
+  return data;
+}
+
+async function getAccountByEmail(email) {
+  const normalizedEmail = normalizeEmail(email);
   const db = await openDB();
-  if (!db) return null;
+
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readonly');
-    const req = tx.objectStore(STORE_NAME).get(HANDLE_KEY);
-    req.onsuccess = () => resolve(req.result || null);
-    req.onerror = () => reject(req.error);
+    const transaction = db.transaction(ACCOUNT_STORE, 'readonly');
+    const index = transaction.objectStore(ACCOUNT_STORE).index('email');
+    const request = index.get(normalizedEmail);
+
+    request.onsuccess = () => {
+      const result = request.result || null;
+      db.close();
+      resolve(result);
+    };
+
+    request.onerror = () => {
+      db.close();
+      reject(request.error || new Error('Could not read the local account.'));
+    };
   });
 }
 
-export function supportsFileSystemAccess() {
-  return typeof window.showOpenFilePicker === 'function' && typeof window.showSaveFilePicker === 'function';
+export async function loginLocalAccount(email, password) {
+  const normalizedEmail = normalizeEmail(email);
+
+  if (!normalizedEmail || !password) {
+    throw new Error('Enter your email and password.');
+  }
+
+  const account = await getAccountByEmail(normalizedEmail);
+
+  if (!account || !(await verifyPassword(password, account))) {
+    throw new Error('Invalid email or password.');
+  }
+
+  await setActiveSession(account.userId);
+
+  return buildPublicData(account);
 }
 
-async function ensurePermission(handle, mode = 'read') {
-  if (!handle) return false;
-  const options = { mode };
-  if (typeof handle.queryPermission === 'function') {
-    const current = await handle.queryPermission(options);
-    if (current === 'granted') return true;
-  }
-  if (typeof handle.requestPermission === 'function') {
-    const next = await handle.requestPermission(options);
-    return next === 'granted';
-  }
-  return true;
-}
-
-function normalizeRows(sheet, expected) {
-  const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-  return rows.map((row) => {
-    const out = {};
-    for (const key of expected) out[key] = row[key] === undefined ? '' : row[key];
-    return out;
+async function setActiveSession(userId) {
+  await withStore(SESSION_STORE, 'readwrite', (store) => {
+    store.put({
+      key: CURRENT_SESSION_KEY,
+      userId,
+      savedAt: new Date().toISOString(),
+    });
   });
 }
 
-function cleanNumber(value) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : 0;
+async function getActiveSessionUserId() {
+  const db = await openDB();
+
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(SESSION_STORE, 'readonly');
+    const request = transaction.objectStore(SESSION_STORE).get(CURRENT_SESSION_KEY);
+
+    request.onsuccess = () => {
+      const result = request.result || null;
+      db.close();
+      resolve(result?.userId || null);
+    };
+
+    request.onerror = () => {
+      db.close();
+      reject(request.error || new Error('Could not read the local session.'));
+    };
+  });
 }
 
-function cleanDate(value) {
-  if (!value) return '';
-  if (typeof value === 'string') return value.slice(0, 10);
-  if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10);
-  return String(value).slice(0, 10);
+export async function getActiveSessionData() {
+  const userId = await getActiveSessionUserId();
+  if (!userId) return null;
+
+  const db = await openDB();
+
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(ACCOUNT_STORE, 'readonly');
+    const request = transaction.objectStore(ACCOUNT_STORE).get(userId);
+
+    request.onsuccess = () => {
+      const account = request.result || null;
+      db.close();
+
+      if (!account) {
+        resolve(null);
+        return;
+      }
+
+      resolve(buildPublicData(account));
+    };
+
+    request.onerror = () => {
+      db.close();
+      reject(request.error || new Error('Could not load the local account.'));
+    };
+  });
 }
+
+export async function saveUserData(data) {
+  const userId = await getActiveSessionUserId();
+
+  if (!userId) {
+    throw new Error('Your local session has ended. Please log in again.');
+  }
+
+  const db = await openDB();
+
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(ACCOUNT_STORE, 'readwrite');
+    const store = transaction.objectStore(ACCOUNT_STORE);
+    const request = store.get(userId);
+
+    request.onsuccess = () => {
+      const account = request.result;
+
+      if (!account) {
+        db.close();
+        reject(new Error('Local account was not found.'));
+        return;
+      }
+
+      const nextData = sanitizeData(data);
+      nextData.profile = {
+        ...(account.data?.profile || {}),
+        ...(nextData.profile || {}),
+        userId: account.userId,
+        email: account.email,
+      };
+
+      store.put({
+        ...account,
+        data: nextData,
+        updatedAt: new Date().toISOString(),
+      });
+    };
+
+    request.onerror = () => {
+      db.close();
+      reject(request.error || new Error('Could not load your local account.'));
+    };
+
+    transaction.oncomplete = () => {
+      db.close();
+      resolve(true);
+    };
+
+    transaction.onerror = () => {
+      db.close();
+      reject(transaction.error || new Error('Could not save data to IndexedDB.'));
+    };
+  });
+}
+
+export async function clearActiveSession() {
+  await withStore(SESSION_STORE, 'readwrite', (store) => {
+    store.delete(CURRENT_SESSION_KEY);
+  });
+}
+
+export async function requestPersistentStorage() {
+  try {
+    if (navigator.storage?.persist) {
+      return await navigator.storage.persist();
+    }
+  } catch {
+    // Browser may deny persistent-storage permission.
+  }
+
+  return false;
+}
+
+/* ---------------- Existing Excel export functionality ---------------- */
 
 export function dataToWorkbook(data) {
   const wb = XLSX.utils.book_new();
   const profile = data.profile || {};
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([{
-    schema_version: APP_VERSION,
-    email: profile.email || '',
-    password_salt: profile.passwordSalt || '',
-    password_hash: profile.passwordHash || '',
-    created_at: profile.createdAt || '',
-    updated_at: new Date().toISOString(),
-  }]), 'Profile');
 
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data.banks.map((b) => ({
-    id: b.id, name: b.name, created_at: b.createdAt,
-  }))), 'Banks');
+  XLSX.utils.book_append_sheet(
+    wb,
+    XLSX.utils.json_to_sheet([
+      {
+        schema_version: APP_VERSION,
+        email: profile.email || '',
+        created_at: profile.createdAt || '',
+        exported_at: new Date().toISOString(),
+      },
+    ]),
+    'Profile',
+  );
 
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data.periods.map((p) => ({
-    id: p.id, start_date: p.startDate, created_at: p.createdAt,
-  }))), 'Periods');
+  XLSX.utils.book_append_sheet(
+    wb,
+    XLSX.utils.json_to_sheet(
+      data.banks.map((bank) => ({
+        id: bank.id,
+        name: bank.name,
+        created_at: bank.createdAt,
+      })),
+    ),
+    'Banks',
+  );
 
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data.transactions.map((t) => ({
-    id: t.id, bank_id: t.bankId, period_id: t.periodId, type: t.type,
-    amount: Number(t.amount), category: t.category, date: t.date, note: t.note || '', created_at: t.createdAt,
-  }))), 'Transactions');
+  XLSX.utils.book_append_sheet(
+    wb,
+    XLSX.utils.json_to_sheet(
+      data.periods.map((period) => ({
+        id: period.id,
+        start_date: period.startDate,
+        end_date: period.endDate || '',
+        created_at: period.createdAt,
+      })),
+    ),
+    'Periods',
+  );
 
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data.transfers.map((t) => ({
-    id: t.id, from_bank_id: t.fromBankId, to_bank_id: t.toBankId, period_id: t.periodId,
-    amount: Number(t.amount), date: t.date, note: t.note || '', created_at: t.createdAt,
-  }))), 'Transfers');
+  XLSX.utils.book_append_sheet(
+    wb,
+    XLSX.utils.json_to_sheet(
+      data.transactions.map((transaction) => ({
+        id: transaction.id,
+        bank_id: transaction.bankId,
+        period_id: transaction.periodId,
+        type: transaction.type,
+        amount: Number(transaction.amount),
+        category: transaction.category,
+        date: transaction.date,
+        note: transaction.note || '',
+        created_at: transaction.createdAt,
+      })),
+    ),
+    'Transactions',
+  );
+
+  XLSX.utils.book_append_sheet(
+    wb,
+    XLSX.utils.json_to_sheet(
+      data.transfers.map((transfer) => ({
+        id: transfer.id,
+        from_bank_id: transfer.fromBankId,
+        to_bank_id: transfer.toBankId,
+        period_id: transfer.periodId,
+        amount: Number(transfer.amount),
+        date: transfer.date,
+        note: transfer.note || '',
+        created_at: transfer.createdAt,
+      })),
+    ),
+    'Transfers',
+  );
 
   return wb;
 }
 
-export function workbookToData(wb) {
-  if (!wb.SheetNames.includes('Profile')) throw new Error('This is not a Daily Money Tracker Excel file.');
-  const profileRows = normalizeRows(wb.Sheets.Profile, ['schema_version','email','password_salt','password_hash','created_at','updated_at']);
-  const profile = profileRows[0];
-  if (!profile?.email || !profile?.password_salt || !profile?.password_hash) throw new Error('The Excel file is missing required account information.');
-
-  const banks = wb.Sheets.Banks ? normalizeRows(wb.Sheets.Banks, ['id','name','created_at']).filter((b) => b.id && b.name).map((b) => ({ id: String(b.id), name: String(b.name), createdAt: String(b.created_at || '') })) : [];
-  const periods = wb.Sheets.Periods ? normalizeRows(wb.Sheets.Periods, ['id','start_date','created_at']).filter((p) => p.id && p.start_date).map((p) => ({ id: String(p.id), startDate: cleanDate(p.start_date), createdAt: String(p.created_at || '') })) : [];
-  const transactions = wb.Sheets.Transactions ? normalizeRows(wb.Sheets.Transactions, ['id','bank_id','period_id','type','amount','category','date','note','created_at']).filter((t) => t.id && t.bank_id && t.period_id).map((t) => ({
-    id: String(t.id), bankId: String(t.bank_id), periodId: String(t.period_id), type: t.type === 'income' ? 'income' : 'expense',
-    amount: cleanNumber(t.amount), category: String(t.category || 'Other'), date: cleanDate(t.date), note: String(t.note || ''), createdAt: String(t.created_at || ''),
-  })) : [];
-  const transfers = wb.Sheets.Transfers ? normalizeRows(wb.Sheets.Transfers, ['id','from_bank_id','to_bank_id','period_id','amount','date','note','created_at']).filter((t) => t.id && t.from_bank_id && t.to_bank_id && t.period_id).map((t) => ({
-    id: String(t.id), fromBankId: String(t.from_bank_id), toBankId: String(t.to_bank_id), periodId: String(t.period_id),
-    amount: cleanNumber(t.amount), date: cleanDate(t.date), note: String(t.note || ''), createdAt: String(t.created_at || ''),
-  })) : [];
-
-  return {
-    profile: {
-      email: String(profile.email).trim().toLowerCase(),
-      passwordSalt: String(profile.password_salt),
-      passwordHash: String(profile.password_hash),
-      createdAt: String(profile.created_at || ''),
-    }, banks, periods, transactions, transfers,
-  };
-}
-
-export async function readWorkbookFile(file) {
-  const data = await file.arrayBuffer();
-  return workbookToData(XLSX.read(data, { type: 'array', cellDates: false }));
-}
-
-export async function openWorkbookPicker() {
-  if (supportsFileSystemAccess()) {
-    const [handle] = await window.showOpenFilePicker({
-      multiple: false,
-      types: [{
-        description: 'Excel workbook',
-        accept: { 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'] },
-      }],
-      excludeAcceptAllOption: true,
-    });
-    const file = await handle.getFile();
-    const data = await readWorkbookFile(file);
-    await saveFileHandle(handle);
-    return { data, handle, source: 'filesystem' };
-  }
-
-  throw new Error('FILE_INPUT_REQUIRED');
-}
-
-export async function openHandleIfAvailable() {
-  if (!supportsFileSystemAccess()) return null;
-  const handle = await getFileHandle();
-  if (!handle) return null;
-  try {
-    if (!(await ensurePermission(handle, 'read'))) return null;
-    const file = await handle.getFile();
-    const data = await readWorkbookFile(file);
-    return { data, handle, source: 'filesystem' };
-  } catch {
-    return null;
-  }
-}
-
-export async function saveWorkbook(data, preferredName = 'DailyMoneyTracker.xlsx', existingHandle = null) {
+export async function exportWorkbook(data, preferredName = 'DailyMoneyTracker.xlsx') {
   const wb = dataToWorkbook(data);
-  const bytes = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-  const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-
-  if (existingHandle && supportsFileSystemAccess()) {
-    const allowed = await ensurePermission(existingHandle, 'readwrite');
-    if (allowed) {
-      const writable = await existingHandle.createWritable();
-      await writable.write(blob);
-      await writable.close();
-      await saveFileHandle(existingHandle);
-      return { mode: 'saved', handle: existingHandle, blob };
-    }
-  }
-
-  if (supportsFileSystemAccess()) {
-    const handle = await window.showSaveFilePicker({
-      suggestedName: preferredName,
-      types: [{
-        description: 'Excel workbook',
-        accept: { 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'] },
-      }],
-      excludeAcceptAllOption: true,
-    });
-    const writable = await handle.createWritable();
-    await writable.write(blob);
-    await writable.close();
-    await saveFileHandle(handle);
-    return { mode: 'saved', handle, blob };
-  }
-
   XLSX.writeFile(wb, preferredName);
-  return { mode: 'downloaded', handle: null, blob };
+  return true;
 }
 
 export function makeWorkbookFileName(email) {
-  const safe = String(email || 'account').split('@')[0].replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '') || 'account';
+  const safe = String(email || 'account')
+    .split('@')[0]
+    .replace(/[^a-z0-9_-]+/gi, '-')
+    .replace(/^-+|-+$/g, '') || 'account';
+
   return `DailyMoneyTracker_${safe}.xlsx`;
 }

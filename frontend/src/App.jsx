@@ -1,13 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   APP_VERSION,
+  clearActiveSession,
+  createLocalAccount,
   emptyData,
-  getFileHandle,
+  exportWorkbook,
+  getActiveSessionData,
+  loginLocalAccount,
   makeWorkbookFileName,
-  openHandleIfAvailable,
-  readWorkbookFile,
-  saveFileHandle,
-  saveWorkbook,
+  requestPersistentStorage,
+  saveUserData,
 } from './storage';
 
 const incomeCategories = ['Salary', 'Freelance', 'Business', 'Interest', 'Other'];
@@ -32,112 +34,110 @@ const periodEnd = (startDate) => subDays(addMonths(startDate, 1), 1);
 const periodLabel = (period) => period ? `${dateLabel(period.startDate)} – ${dateLabel(period.endDate || periodEnd(period.startDate))}` : 'No month started';
 const isDateWithinPeriod = (date, period) => period && date >= period.startDate && date <= (period.endDate || periodEnd(period.startDate));
 
-async function bytesToHash(bytes) {
-  const digest = await crypto.subtle.digest('SHA-256', bytes);
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
-}
-
-const randomBytes = (size) => crypto.getRandomValues(new Uint8Array(size));
-
-async function hashPassword(password, saltBytes, iterations = 220000) {
-  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
-  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: saltBytes, iterations, hash: 'SHA-256' }, key, 256);
-  return bytesToHash(new Uint8Array(bits));
-}
-
-async function createVerifier(password) {
-  const salt = randomBytes(16);
-  const hash = await hashPassword(password, salt);
-  return { salt: [...salt].map((b) => b.toString(16).padStart(2, '0')).join(''), hash };
-}
-
-const hexToBytes = (hex) => new Uint8Array((hex.match(/.{1,2}/g) || []).map((b) => parseInt(b, 16)));
-
-async function verifyPassword(password, profile) {
-  try { return (await hashPassword(password, hexToBytes(profile.passwordSalt))) === profile.passwordHash; }
-  catch { return false; }
-}
-
 function makeInitialForm(type, period) {
   const date = period && isDateWithinPeriod(today(), period) ? today() : (period?.startDate || today());
   return { amount: '', category: type === 'expense' ? 'Food' : 'Salary', date, note: '' };
 }
 
-function LoginScreen({ onOpenFile, onCreateAccount, autoLoading, error }) {
-  const inputRef = useRef(null);
-  const [password, setPassword] = useState('');
-  const [mode, setMode] = useState('open');
+function LoginScreen({ onLogin, onCreateAccount, autoLoading, error }) {
+  const [mode, setMode] = useState('login');
   const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [busy, setBusy] = useState(false);
   const [localError, setLocalError] = useState('');
 
-  async function handleOpenFile(file) {
-    if (!file) return;
-    setBusy(true); setLocalError('');
-    try { const data = await readWorkbookFile(file); setPassword(''); await onOpenFile(data, null, file.name); }
-    catch (err) { setLocalError(err.message || 'Could not open the Excel account.'); }
-    finally { setBusy(false); }
+  async function handleLogin(event) {
+    event.preventDefault();
+    setLocalError('');
+
+    const normalizedEmail = email.trim().toLowerCase();
+
+    if (!normalizedEmail) {
+      return setLocalError('Enter your email address.');
+    }
+
+    if (!password) {
+      return setLocalError('Enter your password.');
+    }
+
+    setBusy(true);
+
+    try {
+      await onLogin(normalizedEmail, password);
+      setPassword('');
+    } catch (err) {
+      setLocalError(err.message || 'Could not log in.');
+    } finally {
+      setBusy(false);
+    }
   }
 
-  async function handleCreate(e) {
-    e.preventDefault(); setLocalError('');
-    if (newPassword.length < 8) return setLocalError('Password must be at least 8 characters.');
-    if (newPassword !== confirm) return setLocalError('Passwords do not match.');
+  async function handleCreate(event) {
+    event.preventDefault();
+    setLocalError('');
+
+    const normalizedEmail = email.trim().toLowerCase();
+
+    if (!normalizedEmail) {
+      return setLocalError('Enter your email address.');
+    }
+
+    if (newPassword.length < 8) {
+      return setLocalError('Password must be at least 8 characters.');
+    }
+
+    if (newPassword !== confirm) {
+      return setLocalError('Passwords do not match.');
+    }
+
     setBusy(true);
-    try { await onCreateAccount(email.trim(), newPassword); }
-    catch (err) { setLocalError(err.message || 'Could not create the account.'); }
-    finally { setBusy(false); }
+
+    try {
+      await onCreateAccount(normalizedEmail, newPassword);
+      setNewPassword('');
+      setConfirm('');
+    } catch (err) {
+      setLocalError(err.message || 'Could not create the account.');
+    } finally {
+      setBusy(false);
+    }
   }
 
   const shownError = localError || error;
+
   return <div className="auth-shell">
     <div className="auth-card">
       <div className="brand-mark">₹</div>
-      <div className="eyebrow">PRIVATE • LOCAL EXCEL</div>
+      <div className="eyebrow">PRIVATE • LOCAL INDEXEDDB</div>
       <h1>Daily Money Tracker</h1>
-      <p className="auth-subtitle">Your account and financial records live in your own Excel workbook on your device.</p>
+      <p className="auth-subtitle">Your account and financial records are stored locally in this browser using IndexedDB.</p>
+
       <div className="auth-switch">
-        <button className={mode === 'open' ? 'active' : ''} onClick={() => { setMode('open'); setLocalError(''); }}>Open account</button>
+        <button className={mode === 'login' ? 'active' : ''} onClick={() => { setMode('login'); setLocalError(''); }}>Login</button>
         <button className={mode === 'create' ? 'active' : ''} onClick={() => { setMode('create'); setLocalError(''); }}>Create account</button>
       </div>
+
       {shownError && <div className="error">{shownError}</div>}
 
-      {mode === 'open' ? <>
-        <button className="primary-button large" onClick={() => inputRef.current?.click()} disabled={busy || autoLoading}>{busy || autoLoading ? 'Opening Excel…' : 'Choose Excel account'}</button>
-        <input ref={inputRef} className="hidden-file" type="file" accept=".xlsx,.xls" onChange={(e) => handleOpenFile(e.target.files?.[0])} />
-        <div className="auth-help"><strong>How it works</strong><span>Choose your DailyMoneyTracker Excel file. Your profile appears first, then enter the workbook password to unlock the data.</span></div>
-        <div className="security-note">No backend • No cloud database • No server copy of your financial data.</div>
-      </> : <form onSubmit={handleCreate}>
+      {mode === 'login' ? <form onSubmit={handleLogin}>
+        <label>Email<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" autoComplete="email" required /></label>
+        <label>Password<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Your password" autoComplete="current-password" required /></label>
+        <button className="primary-button large" disabled={busy || autoLoading}>{busy || autoLoading ? 'Checking account…' : 'Login'}</button>
+        <div className="auth-help"><strong>Your local profile</strong><span>After login, only the signed-in person's banks, months, income, expenses and transfers are loaded from IndexedDB.</span></div>
+      </form> : <form onSubmit={handleCreate}>
         <label>Email<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" autoComplete="email" required /></label>
         <label>Password<input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="At least 8 characters" autoComplete="new-password" required /></label>
         <label>Confirm password<input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder="Repeat your password" autoComplete="new-password" required /></label>
-        <button className="primary-button large" disabled={busy}>{busy ? 'Creating Excel account…' : 'Create account & Excel file'}</button>
-        <p className="auth-note">Your password is stored as a salted hash inside the workbook, not as plain text.</p>
+        <button className="primary-button large" disabled={busy}>{busy ? 'Creating local account…' : 'Create account'}</button>
+        <p className="auth-note">The password is stored as a salted hash. The live financial records remain in this browser's IndexedDB storage.</p>
       </form>}
-      <div className="version-note">Local Excel edition • {APP_VERSION}</div>
+
+      <div className="security-note">No backend • No cloud database • No server copy of your financial data.</div>
+      <div className="version-note">Local IndexedDB edition • {APP_VERSION}</div>
     </div>
   </div>;
-}
-
-function PasswordDialog({ profile, onUnlock, onCancel }) {
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
-  async function submit(e) {
-    e.preventDefault(); setError(''); setBusy(true);
-    const ok = await verifyPassword(password, profile);
-    if (!ok) setError('Incorrect password for this Excel account.'); else onUnlock();
-    setBusy(false);
-  }
-  return <div className="modal-backdrop"><div className="modal-card">
-    <div className="eyebrow">ACCOUNT</div><h2>{profile.email}</h2><p className="muted">Enter the password stored for this local Excel account.</p>
-    {error && <div className="error">{error}</div>}
-    <form onSubmit={submit}><label>Password<input autoFocus type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required /></label>
-      <div className="modal-actions"><button type="button" className="secondary-button" onClick={onCancel}>Cancel</button><button className="primary-button" disabled={busy}>{busy ? 'Checking…' : 'Unlock'}</button></div>
-    </form>
-  </div></div>;
 }
 
 function Dashboard({ data }) {
@@ -172,16 +172,20 @@ function Dashboard({ data }) {
   </div>;
 }
 
-function ProfileMenu({ email, onLogout, onSave, onOpen, onBackup }) {
-  return <div className="profile-actions"><div className="profile-pill"><div className="avatar">{email[0]?.toUpperCase() || 'U'}</div><div><strong>{email}</strong><span>Local Excel account</span></div></div><button className="secondary-button" onClick={onSave}>Save Excel</button><button className="secondary-button" onClick={onOpen}>Open Excel</button><button className="secondary-button" onClick={onBackup}>Export copy</button><button className="danger-button" onClick={onLogout}>Logout</button></div>;
+function ProfileMenu({ email, onExport, onLogout }) {
+  return <div className="profile-actions">
+    <div className="profile-pill">
+      <div className="avatar">{email[0]?.toUpperCase() || 'U'}</div>
+      <div><strong>{email}</strong><span>Local IndexedDB account</span></div>
+    </div>
+    <button className="secondary-button" onClick={onExport}>Export Excel</button>
+    <button className="danger-button" onClick={onLogout}>Logout</button>
+  </div>;
 }
 
 function App() {
   const [data, setData] = useState(emptyData());
   const [unlocked, setUnlocked] = useState(false);
-  const [pendingOpen, setPendingOpen] = useState(null);
-  const [currentHandle, setCurrentHandle] = useState(null);
-  const [fileName, setFileName] = useState('');
   const [booting, setBooting] = useState(true);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
@@ -198,16 +202,23 @@ function App() {
   const [transferForm, setTransferForm] = useState({ fromBankId: '', toBankId: '', amount: '', date: today(), note: '' });
   const [filter, setFilter] = useState('');
   const [showAllMonths, setShowAllMonths] = useState(false);
-  const fileInputRef = useRef(null);
 
   useEffect(() => {
     (async () => {
       try {
-        const restored = await openHandleIfAvailable();
-        if (restored) {
-          setData(restored.data); setCurrentHandle(restored.handle); setFileName(restored.handle.name); setPendingOpen(restored.data); setNotice(`Found ${restored.handle.name}. Enter its password to continue.`);
+        await requestPersistentStorage();
+        const restored = await getActiveSessionData();
+
+        if (restored?.profile?.email) {
+          setData(restored);
+          setUnlocked(true);
+          setNotice(`Welcome back, ${restored.profile.email}.`);
         }
-      } finally { setBooting(false); }
+      } catch (err) {
+        setError(err.message || 'Could not open local storage.');
+      } finally {
+        setBooting(false);
+      }
     })();
   }, []);
 
@@ -233,63 +244,72 @@ function App() {
   function clearMessages() { setError(''); setNotice(''); }
 
   async function createAccount(email, password) {
-    const verifier = await createVerifier(password);
-    const next = { ...emptyData(), profile: { email: email.toLowerCase(), passwordSalt: verifier.salt, passwordHash: verifier.hash, createdAt: new Date().toISOString() } };
-    const result = await saveWorkbook(next, makeWorkbookFileName(email));
-    setData(next); setUnlocked(true); setCurrentHandle(result.handle); setFileName(makeWorkbookFileName(email)); setBankId(''); setPeriodId(''); setTab('dashboard'); setNotice(result.mode === 'downloaded' ? 'Excel account created and downloaded. Keep this file safely in your Files app.' : 'Excel account created and saved.');
-  }
-
-  async function openAccountFromData(nextData, handle, name) {
-    if (!nextData.profile?.email) throw new Error('Invalid account workbook.');
-    setPendingOpen({ data: nextData, handle, name }); setNotice(`Account found: ${nextData.profile.email}`); setError('');
-  }
-
-  function unlockPending() {
-    if (!pendingOpen) return;
-    const next = pendingOpen.data || pendingOpen;
-    setData(next); setCurrentHandle(pendingOpen.handle || null); setFileName(pendingOpen.handle?.name || pendingOpen.name || 'Daily Money Tracker.xlsx'); setUnlocked(true); setPendingOpen(null); setTab('dashboard'); setError(''); setNotice(`Welcome back, ${next.profile.email}.`);
-  }
-
-  function handleLogout() { setUnlocked(false); setPendingOpen(null); setData(emptyData()); setCurrentHandle(null); setFileName(''); setBankId(''); setPeriodId(''); setNotice(''); setError(''); }
-
-  async function openExisting() {
     clearMessages();
-    if (typeof window.showOpenFilePicker === 'function') {
-      try {
-        const [handle] = await window.showOpenFilePicker({ multiple: false, types: [{ description: 'Excel workbook', accept: { 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'] } }], excludeAcceptAllOption: true });
-        const file = await handle.getFile(); const next = await readWorkbookFile(file); await saveFileHandle(handle); openAccountFromData(next, handle, file.name);
-      } catch (err) { if (err?.name !== 'AbortError') setError(err.message || 'Could not open the Excel file.'); }
-    } else fileInputRef.current?.click();
-  }
-
-  async function handleFallbackOpen(file) {
-    if (!file) return;
-    try { const next = await readWorkbookFile(file); await openAccountFromData(next, null, file.name); }
-    catch (err) { setError(err.message || 'Could not open the Excel file.'); }
-  }
-
-  async function saveCurrent(downloadCopy = false) {
-    if (!unlocked || !data.profile) return;
-    clearMessages();
-    try {
-      const result = await saveWorkbook(data, makeWorkbookFileName(data.profile.email), downloadCopy ? null : currentHandle);
-      setCurrentHandle(result.handle || currentHandle); setFileName(result.handle?.name || fileName || makeWorkbookFileName(data.profile.email));
-      setNotice(result.mode === 'downloaded' ? 'Excel copy downloaded. On iPhone/iPad, replace your old file in Files with this updated copy.' : 'Saved to your Excel workbook.');
-    } catch (err) { if (err?.name !== 'AbortError') setError(err.message || 'Could not save the Excel workbook.'); }
-  }
-
-  const persist = async (next, message = 'Changes saved to this session. Click Save Excel to write the workbook on iPhone.') => {
+    const next = await createLocalAccount(email, password);
     setData(next);
-    if (currentHandle && typeof currentHandle.createWritable === 'function') {
-      try { const result = await saveWorkbook(next, makeWorkbookFileName(next.profile.email), currentHandle); setCurrentHandle(result.handle || currentHandle); setNotice('Changes saved automatically to your Excel workbook.'); } catch { setNotice(message); }
-    } else setNotice(message);
+    setUnlocked(true);
+    setBankId('');
+    setPeriodId('');
+    setTab('dashboard');
+    setNotice(`Account created for ${next.profile.email}. Data will be stored locally in IndexedDB.`);
+  }
+
+  async function login(email, password) {
+    clearMessages();
+    const next = await loginLocalAccount(email, password);
+    setData(next);
+    setUnlocked(true);
+    setBankId(next.banks[0]?.id || '');
+    setPeriodId([...next.periods].sort((a, b) => b.startDate.localeCompare(a.startDate))[0]?.id || '');
+    setTab('dashboard');
+    setNotice(`Welcome back, ${next.profile.email}.`);
+  }
+
+  async function handleLogout() {
+    await clearActiveSession();
+    setUnlocked(false);
+    setData(emptyData());
+    setBankId('');
+    setPeriodId('');
+    setTab('dashboard');
+    setNotice('');
+    setError('');
+  }
+
+  async function saveCurrent() {
+    if (!unlocked || !data.profile) return;
+
+    clearMessages();
+
+    try {
+      await exportWorkbook(
+        data,
+        makeWorkbookFileName(data.profile.email),
+      );
+      setNotice('Excel backup exported. IndexedDB remains the live data store.');
+    } catch (err) {
+      if (err?.name !== 'AbortError') {
+        setError(err.message || 'Could not export the Excel backup.');
+      }
+    }
+  }
+
+  const persist = async (next, message = 'Changes saved to IndexedDB on this device.') => {
+    try {
+      await saveUserData(next);
+      setData(next);
+      setNotice(message);
+      setError('');
+    } catch (err) {
+      setError(err.message || 'Could not save your data locally.');
+    }
   };
 
   async function addBank(e) {
     e.preventDefault(); clearMessages(); const name = bankName.trim(); if (!name) return setError('Enter a bank name.');
     if (data.banks.some((b) => b.name.toLowerCase() === name.toLowerCase())) return setError('That bank already exists.');
     const bank = { id: uid('bank'), name, createdAt: new Date().toISOString() };
-    const next = { ...data, banks: [...data.banks, bank] }; setBankName(''); setShowBankForm(false); setBankId(bank.id); setTransferForm((f) => ({ ...f, fromBankId: bank.id, toBankId: data.banks[0]?.id || '' })); await persist(next, 'Bank added. Click Save Excel to keep it in the file.');
+    const next = { ...data, banks: [...data.banks, bank] }; setBankName(''); setShowBankForm(false); setBankId(bank.id); setTransferForm((f) => ({ ...f, fromBankId: bank.id, toBankId: data.banks[0]?.id || '' })); await persist(next, 'Bank added and saved locally.');
   }
 
   async function removeBank() {
@@ -299,7 +319,7 @@ function App() {
       transactions: data.transactions.filter((t) => t.bankId !== activeBank.id),
       transfers: data.transfers.filter((t) => t.fromBankId !== activeBank.id && t.toBankId !== activeBank.id),
     };
-    setBankId(next.banks[0]?.id || ''); await persist(next, 'Bank deleted. Save Excel to write the change.');
+    setBankId(next.banks[0]?.id || ''); await persist(next, 'Bank deleted and saved locally.');
   }
 
   async function addPeriod(e) {
@@ -307,7 +327,7 @@ function App() {
     const startDate = newStartDate; if (!startDate) return setError('Choose a start date.');
     if (data.periods.some((p) => p.startDate === startDate)) return setError('A financial month with this start date already exists.');
     const period = { id: uid('period'), startDate, endDate: periodEnd(startDate), createdAt: new Date().toISOString() };
-    const next = { ...data, periods: [...data.periods, period] }; setNewStartDate(today()); setShowPeriodForm(false); setPeriodId(period.id); setForm(makeInitialForm(type, period)); setTransferForm((f) => ({ ...f, date: period.startDate })); await persist(next, 'Financial month started. Save Excel to write the change.');
+    const next = { ...data, periods: [...data.periods, period] }; setNewStartDate(today()); setShowPeriodForm(false); setPeriodId(period.id); setForm(makeInitialForm(type, period)); setTransferForm((f) => ({ ...f, date: period.startDate })); await persist(next, 'Financial month started and saved locally.');
   }
 
   async function addTransaction(e) {
@@ -317,7 +337,7 @@ function App() {
     const amount = Number(form.amount); if (!(amount > 0)) return setError('Enter an amount greater than 0.');
     if (!isDateWithinPeriod(form.date, activePeriod)) return setError(`Date must be between ${dateLabel(activePeriod.startDate)} and ${dateLabel(activePeriod.endDate || periodEnd(activePeriod.startDate))}.`);
     const transaction = { id: uid('txn'), bankId: activeBank.id, periodId: activePeriod.id, type, amount: Math.round(amount * 100) / 100, category: form.category, date: form.date, note: form.note.trim(), createdAt: new Date().toISOString() };
-    const next = { ...data, transactions: [transaction, ...data.transactions] }; setForm(makeInitialForm(type, activePeriod)); await persist(next, 'Transaction added. Save Excel to write the change.');
+    const next = { ...data, transactions: [transaction, ...data.transactions] }; setForm(makeInitialForm(type, activePeriod)); await persist(next, 'Transaction added and saved locally.');
   }
 
   async function addTransfer(e) {
@@ -327,13 +347,13 @@ function App() {
     if (!(amount > 0)) return setError('Enter a transfer amount greater than 0.');
     if (!isDateWithinPeriod(transferForm.date, activePeriod)) return setError('Transfer date must be inside the selected financial month.');
     const transfer = { id: uid('transfer'), fromBankId: transferForm.fromBankId, toBankId: transferForm.toBankId, periodId: activePeriod.id, amount: Math.round(amount * 100) / 100, date: transferForm.date, note: transferForm.note.trim(), createdAt: new Date().toISOString() };
-    const next = { ...data, transfers: [transfer, ...data.transfers] }; setTransferForm((f) => ({ ...f, amount: '', note: '' })); setShowTransferForm(false); await persist(next, 'Bank transfer recorded. Save Excel to write the change.');
+    const next = { ...data, transfers: [transfer, ...data.transfers] }; setTransferForm((f) => ({ ...f, amount: '', note: '' })); setShowTransferForm(false); await persist(next, 'Bank transfer recorded and saved locally.');
   }
 
   async function deleteItem(kind, id) {
     clearMessages();
     const next = kind === 'transaction' ? { ...data, transactions: data.transactions.filter((t) => t.id !== id) } : { ...data, transfers: data.transfers.filter((t) => t.id !== id) };
-    await persist(next, 'Item deleted. Save Excel to write the change.');
+    await persist(next, 'Item deleted and saved locally.');
   }
 
   const selectedBankTransactions = useMemo(() => {
@@ -358,10 +378,7 @@ function App() {
     return { ...p, income, expense, savings: income - expense };
   }), [sortedPeriods, data.transactions, activeBank?.id]);
 
-  if (!unlocked) return <>
-    <LoginScreen autoLoading={booting} error={error} onOpenFile={openAccountFromData} onCreateAccount={createAccount} />
-    {pendingOpen && <PasswordDialog profile={(pendingOpen.data || pendingOpen).profile} onUnlock={unlockPending} onCancel={() => setPendingOpen(null)} />}
-  </>;
+  if (!unlocked) return <LoginScreen autoLoading={booting} error={error} onLogin={login} onCreateAccount={createAccount} />;
 
   const visibleMonths = showAllMonths ? monthly : monthly.slice(0, 6);
   const transferOptions = sortedBanks.filter((b) => b.id !== transferForm.fromBankId);
@@ -369,12 +386,11 @@ function App() {
 
   return <div className="app-shell">
     <header className="topbar">
-      <div><div className="eyebrow">PERSONAL FINANCE • LOCAL FIRST</div><h1>Daily Money Tracker</h1><p>{fileName || 'Excel workbook'} • No backend required</p></div>
+      <div><div className="eyebrow">PERSONAL FINANCE • LOCAL FIRST</div><h1>Daily Money Tracker</h1><p>{data.profile.email} • Stored in this device browser</p></div>
       <div className="topbar-total"><span>NET TOTAL SAVINGS</span><strong>{money(totalSavings)}</strong><small>All banks • all started months</small></div>
-      <ProfileMenu email={data.profile.email} onLogout={handleLogout} onSave={() => saveCurrent(false)} onOpen={openExisting} onBackup={() => saveCurrent(true)} />
+      <ProfileMenu email={data.profile.email} onLogout={handleLogout} onExport={saveCurrent} />
     </header>
 
-    <input ref={fileInputRef} className="hidden-file" type="file" accept=".xlsx,.xls" onChange={(e) => handleFallbackOpen(e.target.files?.[0])} />
     {(notice || error) && <div className={error ? 'notice error' : 'notice success'}>{error || notice}</div>}
 
     <nav className="main-tabs" aria-label="Primary navigation">
@@ -415,7 +431,7 @@ function App() {
       </> : <section className="panel empty"><strong>Select a bank and start a financial month</strong><span>Your existing bank tabs and monthly controls stay available above.</span></section>}
     </>}
 
-    <footer className="app-footer">Local-first financial tracker • Excel workbook is the source of truth • <button onClick={() => saveCurrent(true)}>Export Excel copy</button></footer>
+    <footer className="app-footer">Local-first financial tracker • IndexedDB is the source of truth • <button onClick={saveCurrent}>Export Excel backup</button></footer>
   </div>;
 }
 

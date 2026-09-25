@@ -1,7 +1,7 @@
 {
   "name": "Daily Money Tracker",
   "short_name": "Money Tracker",
-  "description": "A local-first personal finance tracker using your own Excel workbook.",
+  "description": "A local-first personal finance tracker using IndexedDB on your device.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
