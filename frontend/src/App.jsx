@@ -156,7 +156,7 @@ function LoginScreen({ onLogin, onCreateAccount, autoLoading, error }) {
     <div className="auth-shell">
       <div className="auth-card">
         <div className="brand-mark">₹</div>
-        <div className="eyebrow">PRIVATE • LOCAL INDEXEDDB</div>
+        {/* <div className="eyebrow">PRIVATE • LOCAL INDEXEDDB</div> */}
         <h1>Daily Money Tracker</h1>
         {/* <p className="auth-subtitle">Your account and financial records are stored locally in this browser using IndexedDB.</p> */}
 
@@ -214,11 +214,8 @@ function LoginScreen({ onLogin, onCreateAccount, autoLoading, error }) {
               {busy || autoLoading ? "Checking account…" : "Login"}
             </button>
             <div className="auth-help">
-              <strong>Your local profile</strong>
-              <span>
-                After login, only the signed-in person's banks, months, income,
-                expenses and transfers are loaded from IndexedDB.
-              </span>
+              <strong>Note</strong>
+              <span>Safe and secured.</span>
             </div>
           </form>
         ) : (
@@ -260,14 +257,8 @@ function LoginScreen({ onLogin, onCreateAccount, autoLoading, error }) {
               {busy ? "Creating local account…" : "Create account"}
             </button>
             <p className="auth-note">The password has been stored.</p>
-            {/* <p className="auth-note">
-              The password is stored as a salted hash. The live financial
-              records remain in this browser's IndexedDB storage.
-            </p> */}
           </form>
         )}
-
-        <div className="version-note">Local usage edition</div>
 
         {/* <div className="security-note">
           No backend • No cloud database • No server copy of your financial
@@ -749,6 +740,74 @@ function App() {
     }));
   }
 
+  function handleTransferAmountChange(event) {
+    clearMessages();
+
+    setTransferForm((current) => ({
+      ...current,
+      amount: event.target.value,
+    }));
+  }
+
+  const transferPreview = useMemo(() => {
+    const fromBank = sortedBanks.find(
+      (bank) => bank.id === transferForm.fromBankId,
+    );
+
+    const toBank = sortedBanks.find(
+      (bank) => bank.id === transferForm.toBankId,
+    );
+
+    const amount = Number(transferForm.amount);
+    const transferAmount = Number.isFinite(amount) && amount > 0 ? amount : 0;
+
+    const calculateBankBalance = (selectedBankId) => {
+      if (!selectedBankId) return 0;
+
+      const transactionBalance = data.transactions
+        .filter((transaction) => transaction.bankId === selectedBankId)
+        .reduce(
+          (sum, transaction) =>
+            sum +
+            (transaction.type === "income"
+              ? transaction.amount
+              : -transaction.amount),
+          0,
+        );
+
+      const transferBalance = data.transfers.reduce(
+        (sum, transfer) =>
+          sum +
+          (transfer.toBankId === selectedBankId ? transfer.amount : 0) -
+          (transfer.fromBankId === selectedBankId ? transfer.amount : 0),
+        0,
+      );
+
+      return transactionBalance + transferBalance;
+    };
+
+    const fromBalance = calculateBankBalance(fromBank?.id);
+
+    const toBalance = calculateBankBalance(toBank?.id);
+
+    return {
+      fromName: fromBank?.name || "Select source bank",
+      toName: toBank?.name || "Select receiving bank",
+      amount: transferAmount,
+      fromBalance,
+      toBalance,
+      projectedFromBalance: fromBalance - transferAmount,
+      projectedToBalance: toBalance + transferAmount,
+    };
+  }, [
+    sortedBanks,
+    data.transactions,
+    data.transfers,
+    transferForm.fromBankId,
+    transferForm.toBankId,
+    transferForm.amount,
+  ]);
+
   async function addTransfer(e) {
     e.preventDefault();
     clearMessages();
@@ -807,7 +866,16 @@ function App() {
 
     setShowTransferForm(false);
 
-    await persist(next, "Bank transfer recorded and saved locally.");
+    await persist(
+      next,
+      `₹${amount.toFixed(2)} transferred from ${
+        sortedBanks.find((bank) => bank.id === fromBankId)?.name ||
+        "source bank"
+      } to ${
+        sortedBanks.find((bank) => bank.id === toBankId)?.name ||
+        "receiving bank"
+      }. The receiving account now shows it as Self transfer income.`,
+    );
   }
 
   async function deleteItem(kind, id) {
@@ -823,18 +891,61 @@ function App() {
   }
 
   const selectedBankTransactions = useMemo(() => {
-    return data.transactions
+    const actualTransactions = data.transactions.filter(
+      (t) => t.bankId === activeBank?.id && t.periodId === activePeriod?.id,
+    );
+
+    const receivedSelfTransfers = data.transfers
       .filter(
-        (t) => t.bankId === activeBank?.id && t.periodId === activePeriod?.id,
+        (transfer) =>
+          transfer.toBankId === activeBank?.id &&
+          transfer.periodId === activePeriod?.id,
       )
+      .map((transfer) => {
+        const fromBank = sortedBanks.find(
+          (bank) => bank.id === transfer.fromBankId,
+        );
+
+        return {
+          id: `self-transfer-income-${transfer.id}`,
+          bankId: activeBank.id,
+          periodId: activePeriod.id,
+          type: "self-transfer-income",
+          amount: transfer.amount,
+          category: "Self transfer income",
+          date: transfer.date,
+          note: fromBank
+            ? `Received from ${fromBank.name}${transfer.note ? ` • ${transfer.note}` : ""}`
+            : transfer.note || "Self bank transfer",
+          createdAt: transfer.createdAt,
+          transferId: transfer.id,
+        };
+      });
+
+    return [...actualTransactions, ...receivedSelfTransfers]
       .filter(
         (t) =>
           !filter ||
           t.category.toLowerCase().includes(filter.toLowerCase()) ||
           t.note.toLowerCase().includes(filter.toLowerCase()) ||
           t.type.includes(filter.toLowerCase()),
-      );
-  }, [data.transactions, activeBank?.id, activePeriod?.id, filter]);
+      )
+      .sort((a, b) => {
+        const byDate = b.date.localeCompare(a.date);
+        if (byDate !== 0) return byDate;
+
+        return String(b.createdAt || "").localeCompare(
+          String(a.createdAt || ""),
+        );
+      });
+  }, [
+    data.transactions,
+    data.transfers,
+    activeBank?.id,
+    activePeriod?.id,
+    filter,
+    sortedBanks,
+  ]);
   const selectedTransfers = useMemo(
     () =>
       data.transfers.filter(
@@ -1180,17 +1291,34 @@ function App() {
                               min="0"
                               step="0.01"
                               value={transferForm.amount}
-                              onChange={(e) =>
-                                setTransferForm((f) => ({
-                                  ...f,
-                                  amount: e.target.value,
-                                }))
-                              }
+                              onChange={handleTransferAmountChange}
                               placeholder="0.00"
                               required
                             />
                           </div>
                         </label>
+
+                        <div className="account-actions" aria-live="polite">
+                          <div className="mini-stat">
+                            From account
+                            <strong>{transferPreview.fromName}</strong>
+                            <span>
+                              Change −{money(transferPreview.amount)} • After{" "}
+                              {money(transferPreview.projectedFromBalance)}
+                            </span>
+                          </div>
+
+                          <div className="mini-stat">
+                            Receiving account
+                            <strong>{transferPreview.toName}</strong>
+                            <span>
+                              Self transfer income +
+                              {money(transferPreview.amount)} • After{" "}
+                              {money(transferPreview.projectedToBalance)}
+                            </span>
+                          </div>
+                        </div>
+
                         <label>
                           Date
                           <input
@@ -1450,40 +1578,63 @@ function App() {
                   </div>
                   {selectedBankTransactions.length ? (
                     <div className="transaction-list">
-                      {selectedBankTransactions.map((item) => (
-                        <article className="transaction-row" key={item.id}>
-                          <div className={`transaction-icon ${item.type}`}>
-                            {item.type === "income" ? "↓" : "↑"}
-                          </div>
-                          <div className="transaction-info">
-                            <strong>{item.category}</strong>
-                            <span>
-                              {dateLabel(item.date)}
-                              {item.note ? ` • ${item.note}` : ""}
-                            </span>
-                          </div>
-                          <div
-                            className={
-                              item.type === "income"
-                                ? "transaction-amount positive"
-                                : "transaction-amount negative"
-                            }
-                          >
-                            {item.type === "income" ? "+" : "-"}
-                            {money(item.amount)}
-                          </div>
-                          <button
-                            className="delete-button"
-                            title="Delete"
-                            onClick={() => {
-                              if (window.confirm("Delete this transaction?"))
-                                deleteItem("transaction", item.id);
-                            }}
-                          >
-                            ×
-                          </button>
-                        </article>
-                      ))}
+                      {selectedBankTransactions.map((item) => {
+                        const isSelfTransferIncome =
+                          item.type === "self-transfer-income";
+
+                        return (
+                          <article className="transaction-row" key={item.id}>
+                            <div
+                              className={`transaction-icon ${
+                                isSelfTransferIncome ? "income" : item.type
+                              }`}
+                            >
+                              {isSelfTransferIncome
+                                ? "⇄"
+                                : item.type === "income"
+                                  ? "↓"
+                                  : "↑"}
+                            </div>
+
+                            <div className="transaction-info">
+                              <strong>{item.category}</strong>
+                              <span>
+                                {dateLabel(item.date)}
+                                {item.note ? ` • ${item.note}` : ""}
+                              </span>
+                            </div>
+
+                            <div
+                              className={
+                                item.type === "income" || isSelfTransferIncome
+                                  ? "transaction-amount positive"
+                                  : "transaction-amount negative"
+                              }
+                            >
+                              {item.type === "income" || isSelfTransferIncome
+                                ? "+"
+                                : "-"}
+                              {money(item.amount)}
+                            </div>
+
+                            {!isSelfTransferIncome && (
+                              <button
+                                className="delete-button"
+                                title="Delete"
+                                onClick={() => {
+                                  if (
+                                    window.confirm("Delete this transaction?")
+                                  ) {
+                                    deleteItem("transaction", item.id);
+                                  }
+                                }}
+                              >
+                                ×
+                              </button>
+                            )}
+                          </article>
+                        );
+                      })}
                     </div>
                   ) : (
                     <div className="empty">
