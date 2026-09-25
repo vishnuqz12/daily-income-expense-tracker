@@ -421,10 +421,10 @@ function ProfileMenu({ email, onExport, onLogout }) {
     <div className="profile-actions">
       <div className="profile-pill">
         <div className="avatar">{email[0]?.toUpperCase() || "U"}</div>
-        {/* <div>
+        <div>
           <strong>{email}</strong>
-          <span>Local IndexedDB account</span>
-        </div> */}
+          {/* <span>Local IndexedDB account</span> */}
+        </div>
       </div>
       <button className="secondary-button" onClick={onExport}>
         Export Excel
