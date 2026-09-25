@@ -259,20 +259,23 @@ function LoginScreen({ onLogin, onCreateAccount, autoLoading, error }) {
             <button className="primary-button large" disabled={busy}>
               {busy ? "Creating local account…" : "Create account"}
             </button>
-            <p className="auth-note">
+            <p className="auth-note">The password has been stored.</p>
+            {/* <p className="auth-note">
               The password is stored as a salted hash. The live financial
               records remain in this browser's IndexedDB storage.
-            </p>
+            </p> */}
           </form>
         )}
 
-        <div className="security-note">
+        <div className="version-note">Local usage edition</div>
+
+        {/* <div className="security-note">
           No backend • No cloud database • No server copy of your financial
           data.
         </div>
         <div className="version-note">
           Local IndexedDB edition • {APP_VERSION}
-        </div>
+        </div> */}
       </div>
     </div>
   );
@@ -679,35 +682,131 @@ function App() {
     await persist(next, "Transaction added and saved locally.");
   }
 
+  function openTransferForm() {
+    clearMessages();
+
+    const availableBanks = sortedBanks;
+
+    if (availableBanks.length < 2) {
+      return setError("Add another bank to enable transfers.");
+    }
+
+    const preferredFromId =
+      transferForm.fromBankId &&
+      availableBanks.some((bank) => bank.id === transferForm.fromBankId)
+        ? transferForm.fromBankId
+        : activeBank?.id || availableBanks[0].id;
+
+    const preferredToId =
+      transferForm.toBankId &&
+      transferForm.toBankId !== preferredFromId &&
+      availableBanks.some((bank) => bank.id === transferForm.toBankId)
+        ? transferForm.toBankId
+        : availableBanks.find((bank) => bank.id !== preferredFromId)?.id || "";
+
+    setTransferForm((current) => ({
+      ...current,
+      fromBankId: preferredFromId,
+      toBankId: preferredToId,
+      date:
+        activePeriod && isDateWithinPeriod(current.date, activePeriod)
+          ? current.date
+          : activePeriod?.startDate || today(),
+    }));
+
+    setShowTransferForm(true);
+  }
+
+  function handleFromBankChange(event) {
+    const nextFromBankId = String(event.target.value);
+
+    clearMessages();
+
+    setTransferForm((current) => {
+      const currentToBankId = String(current.toBankId || "");
+
+      const nextToBankId =
+        currentToBankId &&
+        currentToBankId !== nextFromBankId &&
+        sortedBanks.some((bank) => bank.id === currentToBankId)
+          ? currentToBankId
+          : sortedBanks.find((bank) => bank.id !== nextFromBankId)?.id || "";
+
+      return {
+        ...current,
+        fromBankId: nextFromBankId,
+        toBankId: nextToBankId,
+      };
+    });
+  }
+
+  function handleToBankChange(event) {
+    clearMessages();
+
+    setTransferForm((current) => ({
+      ...current,
+      toBankId: String(event.target.value),
+    }));
+  }
+
   async function addTransfer(e) {
     e.preventDefault();
     clearMessages();
+
     if (!activePeriod)
       return setError("Start a financial month before transferring money.");
+
     const amount = Number(transferForm.amount);
-    if (!transferForm.fromBankId || !transferForm.toBankId)
-      return setError("Choose both banks.");
-    if (transferForm.fromBankId === transferForm.toBankId)
-      return setError("Choose two different banks.");
+
+    const fromBankId = String(transferForm.fromBankId || "");
+
+    const toBankId = String(transferForm.toBankId || "");
+
+    if (!fromBankId || !toBankId) return setError("Choose both banks.");
+
+    if (fromBankId === toBankId) return setError("Choose two different banks.");
+
+    const fromBankExists = sortedBanks.some((bank) => bank.id === fromBankId);
+
+    const toBankExists = sortedBanks.some((bank) => bank.id === toBankId);
+
+    if (!fromBankExists || !toBankExists)
+      return setError("Please select valid source and destination banks.");
+
     if (!(amount > 0))
       return setError("Enter a transfer amount greater than 0.");
+
     if (!isDateWithinPeriod(transferForm.date, activePeriod))
       return setError(
         "Transfer date must be inside the selected financial month.",
       );
+
     const transfer = {
       id: uid("transfer"),
-      fromBankId: transferForm.fromBankId,
-      toBankId: transferForm.toBankId,
+      fromBankId,
+      toBankId,
       periodId: activePeriod.id,
       amount: Math.round(amount * 100) / 100,
       date: transferForm.date,
       note: transferForm.note.trim(),
       createdAt: new Date().toISOString(),
     };
-    const next = { ...data, transfers: [transfer, ...data.transfers] };
-    setTransferForm((f) => ({ ...f, amount: "", note: "" }));
+
+    const next = {
+      ...data,
+      transfers: [transfer, ...data.transfers],
+    };
+
+    setTransferForm((f) => ({
+      ...f,
+      amount: "",
+      note: "",
+      fromBankId,
+      toBankId,
+    }));
+
     setShowTransferForm(false);
+
     await persist(next, "Bank transfer recorded and saved locally.");
   }
 
@@ -1020,7 +1119,14 @@ function App() {
                   {sortedBanks.length >= 2 && (
                     <button
                       className="secondary-button"
-                      onClick={() => setShowTransferForm(!showTransferForm)}
+                      onClick={() => {
+                        if (showTransferForm) {
+                          clearMessages();
+                          setShowTransferForm(false);
+                        } else {
+                          openTransferForm();
+                        }
+                      }}
                     >
                       {showTransferForm ? "Close Transfer" : "+ Transfer Money"}
                     </button>
@@ -1041,17 +1147,8 @@ function App() {
                         <label>
                           From bank
                           <select
-                            value={transferForm.fromBankId || activeBank.id}
-                            onChange={(e) =>
-                              setTransferForm((f) => ({
-                                ...f,
-                                fromBankId: e.target.value,
-                                toBankId:
-                                  f.toBankId === e.target.value
-                                    ? transferOptions[0]?.id || ""
-                                    : f.toBankId,
-                              }))
-                            }
+                            value={transferForm.fromBankId}
+                            onChange={handleFromBankChange}
                           >
                             {sortedBanks.map((b) => (
                               <option key={b.id} value={b.id}>
@@ -1063,17 +1160,8 @@ function App() {
                         <label>
                           To bank
                           <select
-                            value={
-                              transferForm.toBankId ||
-                              transferOptions[0]?.id ||
-                              ""
-                            }
-                            onChange={(e) =>
-                              setTransferForm((f) => ({
-                                ...f,
-                                toBankId: e.target.value,
-                              }))
-                            }
+                            value={transferForm.toBankId}
+                            onChange={handleToBankChange}
                           >
                             {transferOptions.map((b) => (
                               <option key={b.id} value={b.id}>
