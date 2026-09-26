@@ -117,19 +117,14 @@ const getTransferEntriesForBank = (transfers, banks, bankId, periodId) => {
 
       return entries;
     });
+};
 
 const getEffectiveTransactionsForBank = (data, banks, bankId, periodId) => [
   ...data.transactions.filter(
     (transaction) =>
-      transaction.bankId === bankId &&
-      transaction.periodId === periodId,
+      transaction.bankId === bankId && transaction.periodId === periodId,
   ),
-  ...getTransferEntriesForBank(
-    data.transfers,
-    banks,
-    bankId,
-    periodId,
-  ),
+  ...getTransferEntriesForBank(data.transfers, banks, bankId, periodId),
 ];
 
 function makeInitialForm(type, period) {
@@ -354,26 +349,26 @@ function Dashboard({ data }) {
     const transferEntries = data.transfers
       .filter((transfer) => transfer.periodId === period.id)
       .flatMap((transfer) => [
-        { ...transfer, type: "self-transfer-expense", bankId: transfer.fromBankId },
-        { ...transfer, type: "self-transfer-income", bankId: transfer.toBankId },
+        {
+          ...transfer,
+          type: "self-transfer-expense",
+          bankId: transfer.fromBankId,
+        },
+        {
+          ...transfer,
+          type: "self-transfer-income",
+          bankId: transfer.toBankId,
+        },
       ]);
 
     const effective = [...transactions, ...transferEntries];
 
     const income = effective
-      .filter(
-        (t) =>
-          t.type === "income" ||
-          t.type === "self-transfer-income",
-      )
+      .filter((t) => t.type === "income" || t.type === "self-transfer-income")
       .reduce((s, t) => s + t.amount, 0);
 
     const expense = effective
-      .filter(
-        (t) =>
-          t.type === "expense" ||
-          t.type === "self-transfer-expense",
-      )
+      .filter((t) => t.type === "expense" || t.type === "self-transfer-expense")
       .reduce((s, t) => s + t.amount, 0);
 
     return { income, expense, savings: income - expense };
@@ -605,7 +600,7 @@ function App() {
     setPeriodId("");
     setTab("dashboard");
     setNotice(
-      `Account created for ${next.profile.email}. Data will be stored locally in IndexedDB.`,
+      `Account created for ${next.profile.email}. Data will be encripted and safe.`,
     );
   }
 
@@ -1024,19 +1019,11 @@ function App() {
     );
 
     const income = transactions
-      .filter(
-        (t) =>
-          t.type === "income" ||
-          t.type === "self-transfer-income",
-      )
+      .filter((t) => t.type === "income" || t.type === "self-transfer-income")
       .reduce((s, t) => s + t.amount, 0);
 
     const expense = transactions
-      .filter(
-        (t) =>
-          t.type === "expense" ||
-          t.type === "self-transfer-expense",
-      )
+      .filter((t) => t.type === "expense" || t.type === "self-transfer-expense")
       .reduce((s, t) => s + t.amount, 0);
     const balanceTransactions = data.transactions
       .filter((t) => t.bankId === activeBank.id)
@@ -1068,22 +1055,24 @@ function App() {
 
         const income = txns
           .filter(
-            (t) =>
-              t.type === "income" ||
-              t.type === "self-transfer-income",
+            (t) => t.type === "income" || t.type === "self-transfer-income",
           )
           .reduce((s, t) => s + t.amount, 0);
 
         const expense = txns
           .filter(
-            (t) =>
-              t.type === "expense" ||
-              t.type === "self-transfer-expense",
+            (t) => t.type === "expense" || t.type === "self-transfer-expense",
           )
           .reduce((s, t) => s + t.amount, 0);
         return { ...p, income, expense, savings: income - expense };
       }),
-    [sortedPeriods, data.transactions, data.transfers, sortedBanks, activeBank?.id],
+    [
+      sortedPeriods,
+      data.transactions,
+      data.transfers,
+      sortedBanks,
+      activeBank?.id,
+    ],
   );
 
   if (!unlocked)
@@ -1706,21 +1695,22 @@ function App() {
                               {money(item.amount)}
                             </div>
 
-                            {!isSelfTransferIncome && item.type !== "self-transfer-expense" && (
-                              <button
-                                className="delete-button"
-                                title="Delete"
-                                onClick={() => {
-                                  if (
-                                    window.confirm("Delete this transaction?")
-                                  ) {
-                                    deleteItem("transaction", item.id);
-                                  }
-                                }}
-                              >
-                                ×
-                              </button>
-                            )}
+                            {!isSelfTransferIncome &&
+                              item.type !== "self-transfer-expense" && (
+                                <button
+                                  className="delete-button"
+                                  title="Delete"
+                                  onClick={() => {
+                                    if (
+                                      window.confirm("Delete this transaction?")
+                                    ) {
+                                      deleteItem("transaction", item.id);
+                                    }
+                                  }}
+                                >
+                                  ×
+                                </button>
+                              )}
                           </article>
                         );
                       })}
