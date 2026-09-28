@@ -71,62 +71,6 @@ const isDateWithinPeriod = (date, period) =>
   date >= period.startDate &&
   date <= (period.endDate || periodEnd(period.startDate));
 
-const getTransferEntriesForBank = (transfers, banks, bankId, periodId) => {
-  if (!bankId) return [];
-
-  return transfers
-    .filter((transfer) => transfer.periodId === periodId)
-    .flatMap((transfer) => {
-      const entries = [];
-
-      if (transfer.fromBankId === bankId) {
-        const toBank = banks.find((bank) => bank.id === transfer.toBankId);
-        entries.push({
-          id: `self-transfer-expense-${transfer.id}`,
-          bankId,
-          periodId,
-          type: "self-transfer-expense",
-          amount: transfer.amount,
-          category: "Self transfer expense",
-          date: transfer.date,
-          note: toBank
-            ? `Transferred to ${toBank.name}${transfer.note ? ` • ${transfer.note}` : ""}`
-            : transfer.note || "Self bank transfer",
-          createdAt: transfer.createdAt,
-          transferId: transfer.id,
-        });
-      }
-
-      if (transfer.toBankId === bankId) {
-        const fromBank = banks.find((bank) => bank.id === transfer.fromBankId);
-        entries.push({
-          id: `self-transfer-income-${transfer.id}`,
-          bankId,
-          periodId,
-          type: "self-transfer-income",
-          amount: transfer.amount,
-          category: "Self transfer income",
-          date: transfer.date,
-          note: fromBank
-            ? `Received from ${fromBank.name}${transfer.note ? ` • ${transfer.note}` : ""}`
-            : transfer.note || "Self bank transfer",
-          createdAt: transfer.createdAt,
-          transferId: transfer.id,
-        });
-      }
-
-      return entries;
-    });
-};
-
-const getEffectiveTransactionsForBank = (data, banks, bankId, periodId) => [
-  ...data.transactions.filter(
-    (transaction) =>
-      transaction.bankId === bankId && transaction.periodId === periodId,
-  ),
-  ...getTransferEntriesForBank(data.transfers, banks, bankId, periodId),
-];
-
 function makeInitialForm(type, period) {
   const date =
     period && isDateWithinPeriod(today(), period)
@@ -332,41 +276,71 @@ function Dashboard({ data }) {
   const periods = [...data.periods].sort((a, b) =>
     b.startDate.localeCompare(a.startDate),
   );
+
   const current = periods[0];
   const previous = periods[1];
-  const totalSavings = data.transactions.reduce(
-    (sum, t) => sum + (t.type === "income" ? t.amount : -t.amount),
+
+  // Dashboard income/expense must include ONLY the values entered
+  // through the normal Income / Expense transaction options.
+  // Self-transfer income/expense is excluded completely.
+  const isRealTransaction = (transaction) =>
+    transaction.type === "income" || transaction.type === "expense";
+
+  const dashboardTransactions = data.transactions.filter(isRealTransaction);
+
+  const totalSavings = dashboardTransactions.reduce(
+    (sum, transaction) =>
+      sum +
+      (transaction.type === "income"
+        ? transaction.amount
+        : -transaction.amount),
     0,
   );
 
   const stats = (period) => {
-    if (!period) return { income: 0, expense: 0, savings: 0 };
+    if (!period) {
+      return {
+        income: 0,
+        expense: 0,
+        savings: 0,
+      };
+    }
 
-    // Dashboard shows only real income and real expenses.
-    // Self transfers stay out of the dashboard totals because they only move
-    // money between the user's own bank accounts.
-    const transactions = data.transactions.filter(
-      (t) => t.periodId === period.id,
+    // IMPORTANT:
+    // Do not use effective/derived transactions here.
+    // Only transactions explicitly added from the Income or Expense option
+    // are included in Dashboard totals.
+    const transactions = dashboardTransactions.filter(
+      (transaction) => transaction.periodId === period.id,
     );
 
     const income = transactions
-      .filter((t) => t.type === "income")
-      .reduce((s, t) => s + t.amount, 0);
+      .filter((transaction) => transaction.type === "income")
+      .reduce((sum, transaction) => sum + transaction.amount, 0);
 
     const expense = transactions
-      .filter((t) => t.type === "expense")
-      .reduce((s, t) => s + t.amount, 0);
+      .filter((transaction) => transaction.type === "expense")
+      .reduce((sum, transaction) => sum + transaction.amount, 0);
 
-    return { income, expense, savings: income - expense };
+    return {
+      income,
+      expense,
+      savings: income - expense,
+    };
   };
-  const c = stats(current),
-    p = stats(previous);
+
+  const c = stats(current);
+  const p = stats(previous);
+
   const delta = (a, b) => ({
     amount: a - b,
     pct: b ? ((a - b) / Math.abs(b)) * 100 : null,
   });
+
   const max = Math.max(c.income, p.income, c.expense, p.expense, 1);
+
   const bar = (v) => `${Math.max(3, Math.round((v / max) * 100))}%`;
+
   return (
     <div className="dashboard-wrap">
       <section className="dashboard-hero panel">
@@ -384,26 +358,31 @@ function Dashboard({ data }) {
           <small>All banks • all started months</small>
         </div>
       </section>
+
       <section className="comparison-grid">
         {["Income", "Expense", "Savings"].map((label) => {
           const key = label.toLowerCase();
           const cd = delta(c[key], p[key]);
+
           return (
             <div className="comparison-card panel" key={label}>
               <div className="card-top">
                 <span>{label}</span>
                 <span>{current ? "Current vs previous" : "—"}</span>
               </div>
+
               <div className="compare-values">
                 <div>
                   <small>Current</small>
                   <strong>{money(c[key])}</strong>
                 </div>
+
                 <div>
                   <small>Previous</small>
                   <strong>{previous ? money(p[key]) : "—"}</strong>
                 </div>
               </div>
+
               <div className="delta">
                 {previous
                   ? `${cd.amount >= 0 ? "+" : ""}${money(cd.amount)}${cd.pct == null ? "" : ` (${cd.pct >= 0 ? "+" : ""}${cd.pct.toFixed(1)}%)`}`
@@ -413,6 +392,7 @@ function Dashboard({ data }) {
           );
         })}
       </section>
+
       <section className="panel chart-panel">
         <div className="section-title">
           <div>
@@ -420,6 +400,7 @@ function Dashboard({ data }) {
             <p>Income and expense side by side</p>
           </div>
         </div>
+
         {current ? (
           <div className="bar-chart">
             <div className="bar-group">
@@ -432,16 +413,20 @@ function Dashboard({ data }) {
               </div>
               <strong>{money(c.income)}</strong>
             </div>
+
             <div className="bar-group">
               <span>Previous income</span>
               <div className="bar-track">
                 <div
                   className="bar previous-bar"
-                  style={{ width: previous ? bar(p.income) : "3%" }}
+                  style={{
+                    width: previous ? bar(p.income) : "3%",
+                  }}
                 />
               </div>
               <strong>{previous ? money(p.income) : "—"}</strong>
             </div>
+
             <div className="bar-group">
               <span>Current expense</span>
               <div className="bar-track">
@@ -452,12 +437,15 @@ function Dashboard({ data }) {
               </div>
               <strong>{money(c.expense)}</strong>
             </div>
+
             <div className="bar-group">
               <span>Previous expense</span>
               <div className="bar-track">
                 <div
                   className="bar expense-previous-bar"
-                  style={{ width: previous ? bar(p.expense) : "3%" }}
+                  style={{
+                    width: previous ? bar(p.expense) : "3%",
+                  }}
                 />
               </div>
               <strong>{previous ? money(p.expense) : "—"}</strong>
@@ -955,12 +943,38 @@ function App() {
   }
 
   const selectedBankTransactions = useMemo(() => {
-    return getEffectiveTransactionsForBank(
-      data,
-      sortedBanks,
-      activeBank?.id,
-      activePeriod?.id,
-    )
+    const actualTransactions = data.transactions.filter(
+      (t) => t.bankId === activeBank?.id && t.periodId === activePeriod?.id,
+    );
+
+    const receivedSelfTransfers = data.transfers
+      .filter(
+        (transfer) =>
+          transfer.toBankId === activeBank?.id &&
+          transfer.periodId === activePeriod?.id,
+      )
+      .map((transfer) => {
+        const fromBank = sortedBanks.find(
+          (bank) => bank.id === transfer.fromBankId,
+        );
+
+        return {
+          id: `self-transfer-income-${transfer.id}`,
+          bankId: activeBank.id,
+          periodId: activePeriod.id,
+          type: "self-transfer-income",
+          amount: transfer.amount,
+          category: "Self transfer income",
+          date: transfer.date,
+          note: fromBank
+            ? `Received from ${fromBank.name}${transfer.note ? ` • ${transfer.note}` : ""}`
+            : transfer.note || "Self bank transfer",
+          createdAt: transfer.createdAt,
+          transferId: transfer.id,
+        };
+      });
+
+    return [...actualTransactions, ...receivedSelfTransfers]
       .filter(
         (t) =>
           !filter ||
@@ -997,19 +1011,14 @@ function App() {
   const summary = useMemo(() => {
     if (!activeBank || !activePeriod)
       return { income: 0, expense: 0, savings: 0, balance: 0 };
-    const transactions = getEffectiveTransactionsForBank(
-      data,
-      sortedBanks,
-      activeBank.id,
-      activePeriod.id,
+    const transactions = data.transactions.filter(
+      (t) => t.bankId === activeBank.id && t.periodId === activePeriod.id,
     );
-
     const income = transactions
-      .filter((t) => t.type === "income" || t.type === "self-transfer-income")
+      .filter((t) => t.type === "income")
       .reduce((s, t) => s + t.amount, 0);
-
     const expense = transactions
-      .filter((t) => t.type === "expense" || t.type === "self-transfer-expense")
+      .filter((t) => t.type === "expense")
       .reduce((s, t) => s + t.amount, 0);
     const balanceTransactions = data.transactions
       .filter((t) => t.bankId === activeBank.id)
@@ -1027,38 +1036,23 @@ function App() {
       savings: income - expense,
       balance: balanceTransactions + transferBalance,
     };
-  }, [data, sortedBanks, activeBank?.id, activePeriod?.id]);
+  }, [data, activeBank?.id, activePeriod?.id]);
 
   const monthly = useMemo(
     () =>
       sortedPeriods.map((p) => {
-        const txns = getEffectiveTransactionsForBank(
-          data,
-          sortedBanks,
-          activeBank?.id,
-          p.id,
+        const txns = data.transactions.filter(
+          (t) => t.bankId === activeBank?.id && t.periodId === p.id,
         );
-
         const income = txns
-          .filter(
-            (t) => t.type === "income" || t.type === "self-transfer-income",
-          )
+          .filter((t) => t.type === "income")
           .reduce((s, t) => s + t.amount, 0);
-
         const expense = txns
-          .filter(
-            (t) => t.type === "expense" || t.type === "self-transfer-expense",
-          )
+          .filter((t) => t.type === "expense")
           .reduce((s, t) => s + t.amount, 0);
         return { ...p, income, expense, savings: income - expense };
       }),
-    [
-      sortedPeriods,
-      data.transactions,
-      data.transfers,
-      sortedBanks,
-      activeBank?.id,
-    ],
+    [sortedPeriods, data.transactions, activeBank?.id],
   );
 
   if (!unlocked)
@@ -1644,20 +1638,14 @@ function App() {
                           <article className="transaction-row" key={item.id}>
                             <div
                               className={`transaction-icon ${
-                                isSelfTransferIncome
-                                  ? "income"
-                                  : item.type === "self-transfer-expense"
-                                    ? "expense"
-                                    : item.type
+                                isSelfTransferIncome ? "income" : item.type
                               }`}
                             >
                               {isSelfTransferIncome
                                 ? "⇄"
-                                : item.type === "self-transfer-expense"
-                                  ? "⇄"
-                                  : item.type === "income"
-                                    ? "↓"
-                                    : "↑"}
+                                : item.type === "income"
+                                  ? "↓"
+                                  : "↑"}
                             </div>
 
                             <div className="transaction-info">
@@ -1681,22 +1669,21 @@ function App() {
                               {money(item.amount)}
                             </div>
 
-                            {!isSelfTransferIncome &&
-                              item.type !== "self-transfer-expense" && (
-                                <button
-                                  className="delete-button"
-                                  title="Delete"
-                                  onClick={() => {
-                                    if (
-                                      window.confirm("Delete this transaction?")
-                                    ) {
-                                      deleteItem("transaction", item.id);
-                                    }
-                                  }}
-                                >
-                                  ×
-                                </button>
-                              )}
+                            {!isSelfTransferIncome && (
+                              <button
+                                className="delete-button"
+                                title="Delete"
+                                onClick={() => {
+                                  if (
+                                    window.confirm("Delete this transaction?")
+                                  ) {
+                                    deleteItem("transaction", item.id);
+                                  }
+                                }}
+                              >
+                                ×
+                              </button>
+                            )}
                           </article>
                         );
                       })}
