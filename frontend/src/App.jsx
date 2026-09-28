@@ -342,33 +342,19 @@ function Dashboard({ data }) {
   const stats = (period) => {
     if (!period) return { income: 0, expense: 0, savings: 0 };
 
-    const transactions = data.transactions
-      .filter((t) => t.periodId === period.id)
-      .map((t) => ({ ...t }));
+    // Dashboard shows only real income and real expenses.
+    // Self transfers stay out of the dashboard totals because they only move
+    // money between the user's own bank accounts.
+    const transactions = data.transactions.filter(
+      (t) => t.periodId === period.id,
+    );
 
-    const transferEntries = data.transfers
-      .filter((transfer) => transfer.periodId === period.id)
-      .flatMap((transfer) => [
-        {
-          ...transfer,
-          type: "self-transfer-expense",
-          bankId: transfer.fromBankId,
-        },
-        {
-          ...transfer,
-          type: "self-transfer-income",
-          bankId: transfer.toBankId,
-        },
-      ]);
-
-    const effective = [...transactions, ...transferEntries];
-
-    const income = effective
-      .filter((t) => t.type === "income" || t.type === "self-transfer-income")
+    const income = transactions
+      .filter((t) => t.type === "income")
       .reduce((s, t) => s + t.amount, 0);
 
-    const expense = effective
-      .filter((t) => t.type === "expense" || t.type === "self-transfer-expense")
+    const expense = transactions
+      .filter((t) => t.type === "expense")
       .reduce((s, t) => s + t.amount, 0);
 
     return { income, expense, savings: income - expense };
@@ -600,7 +586,7 @@ function App() {
     setPeriodId("");
     setTab("dashboard");
     setNotice(
-      `Account created for ${next.profile.email}. Data will be encripted and safe.`,
+      `Account created for ${next.profile.email}. Data will be stored locally in IndexedDB.`,
     );
   }
 
