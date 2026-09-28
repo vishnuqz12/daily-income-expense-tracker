@@ -730,7 +730,18 @@ select:focus {
 
 .month-picker,
 .search-input {
+  width: 100%;
   max-width: 280px;
+  height: 40px;
+  min-height: 40px;
+  max-height: 40px;
+  flex: 0 0 280px;
+}
+
+.search-input {
+  padding: 0 12px;
+  line-height: 1.2;
+  align-self: flex-start;
 }
 
 .type-switch {
@@ -775,7 +786,7 @@ select:focus {
 }
 
 .search-input {
-  flex: 0 1 280px;
+  flex: 0 0 280px;
 }
 
 .dashboard-wrap {
